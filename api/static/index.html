@@ -110,19 +110,35 @@
           <i data-lucide="clock" class="w-4 h-4"></i>
           <span>Cron & Watchdogs</span>
         </button>
+
+        <button onclick="switchTab('nodes')" id="tab-nodes" class="tab-btn w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/50">
+          <i data-lucide="server" class="w-4 h-4"></i>
+          <span>Fleet & APU Nodes</span>
+        </button>
+
+        <button onclick="switchTab('tickets')" id="tab-tickets" class="tab-btn w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/50">
+          <i data-lucide="ticket" class="w-4 h-4"></i>
+          <span>Tickets & Webhooks</span>
+        </button>
       </nav>
 
       <!-- System Telemetry Snapshot in sidebar -->
-      <div class="mt-auto p-4 border-t border-slate-800/80 bg-dark-950/40">
-        <div class="text-xs text-slate-400 font-semibold uppercase tracking-wider mb-2">Hermes Node</div>
+      <div class="mt-auto p-4 border-t border-slate-800/80 bg-dark-950/40 space-y-2">
+        <div class="text-xs text-slate-400 font-semibold uppercase tracking-wider">Fleet Status</div>
         <div class="space-y-1.5 text-xs text-slate-300 font-mono">
-          <div class="flex justify-between">
-            <span class="text-slate-400">Database:</span>
-            <span class="text-emerald-400 truncate max-w-[120px]" title="~/.hermes/state.db">state.db (WAL)</span>
+          <div class="flex justify-between items-center">
+            <span class="text-slate-400">Beehive:</span>
+            <span id="sidebarBeehiveStatus" class="text-emerald-400 text-[11px] flex items-center space-x-1">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block"></span>
+              <span>Online (Local)</span>
+            </span>
           </div>
-          <div class="flex justify-between">
-            <span class="text-slate-400">Karma Store:</span>
-            <span class="text-brand-300 truncate max-w-[120px]" title="~/.hermes_karma/metadata.db">metadata.db</span>
+          <div class="flex justify-between items-center">
+            <span class="text-slate-400">Chunkito:</span>
+            <span id="sidebarChunkitoStatus" class="text-indigo-400 text-[11px] flex items-center space-x-1">
+              <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 inline-block"></span>
+              <span>118GB APU</span>
+            </span>
           </div>
         </div>
       </div>
@@ -412,6 +428,219 @@
 
         <div id="cronContainer" class="bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm">
           <div id="cronList" class="space-y-3">
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: FLEET & NODES TELEMETRY -->
+      <section id="view-nodes" class="view-panel space-y-6 hidden">
+        <!-- Header & Refresh Button -->
+        <div class="flex flex-wrap items-center justify-between gap-4 bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm">
+          <div>
+            <div class="flex items-center space-x-2">
+              <h2 class="text-base font-bold text-white">Fleet & Multi-Node Telemetry</h2>
+              <span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">Tailscale Mesh</span>
+            </div>
+            <p class="text-xs text-slate-400">Real-time CPU, RAM, AMD APU Unified VRAM, and Ollama inference metrics across nodes</p>
+          </div>
+          <div class="flex items-center space-x-3">
+            <span id="nodesLastUpdated" class="text-xs text-slate-500 font-mono">Updated: Just now</span>
+            <button onclick="refreshAllNodes()" class="px-3.5 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold flex items-center space-x-2 shadow-md shadow-brand-500/20 transition">
+              <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+              <span>Refresh Fleet</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Fleet KPI Summary Cards -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-4 shadow-sm">
+            <div class="text-xs text-slate-400 font-medium flex items-center justify-between">
+              <span>Fleet Nodes</span>
+              <i data-lucide="server" class="w-4 h-4 text-brand-400"></i>
+            </div>
+            <div id="kpiFleetNodes" class="text-2xl font-bold text-white font-mono mt-1">2</div>
+            <div id="kpiFleetOnlineSub" class="text-[11px] text-emerald-400 mt-1 flex items-center space-x-1">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block"></span>
+              <span>2 online (1 local, 1 remote)</span>
+            </div>
+          </div>
+
+          <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-4 shadow-sm">
+            <div class="text-xs text-slate-400 font-medium flex items-center justify-between">
+              <span>Total Fleet VRAM</span>
+              <i data-lucide="microchip" class="w-4 h-4 text-indigo-400"></i>
+            </div>
+            <div id="kpiTotalVram" class="text-2xl font-bold text-indigo-300 font-mono mt-1">122.0 GB</div>
+            <div id="kpiTotalVramSub" class="text-[11px] text-slate-400 mt-1 font-mono">118 GB APU + 4 GB iGPU</div>
+          </div>
+
+          <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-4 shadow-sm">
+            <div class="text-xs text-slate-400 font-medium flex items-center justify-between">
+              <span>APU VRAM Allocation</span>
+              <i data-lucide="activity" class="w-4 h-4 text-emerald-400"></i>
+            </div>
+            <div id="kpiVramUtil" class="text-2xl font-bold text-emerald-400 font-mono mt-1">0.0 GB</div>
+            <div id="kpiVramUtilPct" class="text-[11px] text-slate-400 mt-1 font-mono">0.0% allocated to models</div>
+          </div>
+
+          <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-4 shadow-sm">
+            <div class="text-xs text-slate-400 font-medium flex items-center justify-between">
+              <span>Active Inference Models</span>
+              <i data-lucide="cpu" class="w-4 h-4 text-amber-400"></i>
+            </div>
+            <div id="kpiActiveModels" class="text-2xl font-bold text-white font-mono mt-1">0</div>
+            <div class="text-[11px] text-slate-400 mt-1">Loaded in VRAM across nodes</div>
+          </div>
+        </div>
+
+        <!-- Node Detail Cards Grid -->
+        <div id="nodesGrid" class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <!-- Populated dynamically via loadNodes() in app.js -->
+          <div class="text-center py-12 text-slate-500 col-span-2">Loading fleet nodes telemetry...</div>
+        </div>
+      </section>
+
+      <!-- TAB: TICKETS & WEBHOOKS -->
+      <section id="view-tickets" class="view-panel space-y-6 hidden">
+        <!-- Header & KPI row -->
+        <div class="flex flex-wrap items-center justify-between gap-4 bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm">
+          <div>
+            <h2 class="text-base font-bold text-white">Bi-Directional Ticket Sync & Webhook Receivers</h2>
+            <p class="text-xs text-slate-400">Live webhook integration for GitHub Issues/PRs, Linear, and Jira with automatic session linking</p>
+          </div>
+          <button onclick="openLinkTicketModal()" class="px-3.5 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold flex items-center space-x-2 shadow-md shadow-brand-500/20">
+            <i data-lucide="plus" class="w-4 h-4"></i>
+            <span>Link New Ticket</span>
+          </button>
+        </div>
+
+        <!-- KPI Summary Cards -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-4 shadow-sm">
+            <div class="text-xs text-slate-400 font-medium">Linked Tickets</div>
+            <div id="kpiTotalTickets" class="text-2xl font-bold text-white font-mono mt-1">0</div>
+            <div class="text-[11px] text-slate-500 mt-1">Across all sessions</div>
+          </div>
+          <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-4 shadow-sm">
+            <div class="text-xs text-slate-400 font-medium">Synced Hermes Sessions</div>
+            <div id="kpiSyncedSessions" class="text-2xl font-bold text-brand-400 font-mono mt-1">0</div>
+            <div class="text-[11px] text-slate-500 mt-1">Active ticket references</div>
+          </div>
+          <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-4 shadow-sm">
+            <div class="text-xs text-slate-400 font-medium">Webhooks Received</div>
+            <div id="kpiTotalWebhooks" class="text-2xl font-bold text-emerald-400 font-mono mt-1">0</div>
+            <div class="text-[11px] text-slate-500 mt-1">Audit log entries</div>
+          </div>
+          <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-4 shadow-sm">
+            <div class="text-xs text-slate-400 font-medium">Active Receivers</div>
+            <div class="text-2xl font-bold text-indigo-400 font-mono mt-1">3/3</div>
+            <div class="text-[11px] text-slate-500 mt-1">GitHub, Linear, Jira</div>
+          </div>
+        </div>
+
+        <!-- Webhook Receiver Endpoints Configuration Box -->
+        <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-bold text-slate-200 flex items-center space-x-2">
+              <i data-lucide="webhook" class="w-4 h-4 text-brand-400"></i>
+              <span>Configured Inbound Webhook Endpoints</span>
+            </h3>
+            <span class="text-xs text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded-full font-mono">Port 8020 Active</span>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs font-mono">
+            <div class="p-3 rounded-lg bg-dark-950 border border-slate-800 space-y-1">
+              <div class="text-slate-400 font-semibold flex items-center space-x-1.5">
+                <i data-lucide="github" class="w-3.5 h-3.5 text-white"></i>
+                <span class="text-white">GitHub Webhook</span>
+              </div>
+              <div class="text-brand-300 select-all truncate">POST /api/webhooks/github</div>
+              <div class="text-[10px] text-slate-500">Events: issues, issue_comment, pull_request, push</div>
+            </div>
+            <div class="p-3 rounded-lg bg-dark-950 border border-slate-800 space-y-1">
+              <div class="text-slate-400 font-semibold flex items-center space-x-1.5">
+                <i data-lucide="git-pull-request" class="w-3.5 h-3.5 text-indigo-400"></i>
+                <span class="text-white">Linear Webhook</span>
+              </div>
+              <div class="text-indigo-300 select-all truncate">POST /api/webhooks/linear</div>
+              <div class="text-[10px] text-slate-500">Events: Issue (create/update), Comment</div>
+            </div>
+            <div class="p-3 rounded-lg bg-dark-950 border border-slate-800 space-y-1">
+              <div class="text-slate-400 font-semibold flex items-center space-x-1.5">
+                <i data-lucide="layers" class="w-3.5 h-3.5 text-sky-400"></i>
+                <span class="text-white">Jira Webhook</span>
+              </div>
+              <div class="text-sky-300 select-all truncate">POST /api/webhooks/jira</div>
+              <div class="text-[10px] text-slate-500">Events: issue_created, issue_updated, comments</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Linked Tickets Table -->
+        <div class="bg-dark-900 border border-slate-800/80 rounded-xl overflow-hidden shadow-sm">
+          <div class="px-5 py-4 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center space-x-3">
+              <h3 class="text-sm font-bold text-white">All Linked Tickets</h3>
+              <select id="ticketFilterProvider" onchange="loadTicketsTab()" class="bg-dark-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-300">
+                <option value="">All Providers</option>
+                <option value="github">GitHub</option>
+                <option value="linear">Linear</option>
+                <option value="jira">Jira</option>
+              </select>
+            </div>
+            <div class="relative w-64">
+              <input id="ticketSearchInput" oninput="debounceLoadTickets()" type="text" placeholder="Search ticket key, title, session..." class="w-full pl-3 pr-3 py-1 bg-dark-950 border border-slate-800 rounded text-xs text-slate-200 focus:outline-none focus:border-brand-500" />
+            </div>
+          </div>
+
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs text-slate-300">
+              <thead class="bg-dark-950/80 text-slate-400 font-semibold border-b border-slate-800">
+                <tr>
+                  <th class="py-3 px-4">Provider</th>
+                  <th class="py-3 px-4">Ticket Key</th>
+                  <th class="py-3 px-4">Title / Summary</th>
+                  <th class="py-3 px-4">Status</th>
+                  <th class="py-3 px-4">Assignee</th>
+                  <th class="py-3 px-4">Linked Hermes Sessions</th>
+                  <th class="py-3 px-4 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="ticketsTableBody" class="divide-y divide-slate-800/60 font-mono">
+                <tr><td colspan="7" class="text-center py-8 text-slate-500">Loading tickets...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Recent Webhook Events Audit Stream -->
+        <div class="bg-dark-900 border border-slate-800/80 rounded-xl overflow-hidden shadow-sm">
+          <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+            <h3 class="text-sm font-bold text-white flex items-center space-x-2">
+              <i data-lucide="activity" class="w-4 h-4 text-emerald-400"></i>
+              <span>Recent Webhook Deliveries (Audit Log)</span>
+            </h3>
+            <button onclick="loadWebhookEvents()" class="text-xs text-brand-400 hover:text-brand-300 flex items-center space-x-1">
+              <i data-lucide="refresh-cw" class="w-3 h-3"></i>
+              <span>Refresh</span>
+            </button>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs text-slate-300">
+              <thead class="bg-dark-950/80 text-slate-400 font-semibold border-b border-slate-800">
+                <tr>
+                  <th class="py-2.5 px-4">Received</th>
+                  <th class="py-2.5 px-4">Provider</th>
+                  <th class="py-2.5 px-4">Event Type</th>
+                  <th class="py-2.5 px-4">Ticket Key</th>
+                  <th class="py-2.5 px-4">Matched Sessions</th>
+                  <th class="py-2.5 px-4">Result</th>
+                </tr>
+              </thead>
+              <tbody id="webhookEventsBody" class="divide-y divide-slate-800/60 font-mono text-[11px]">
+                <tr><td colspan="6" class="text-center py-6 text-slate-500">Loading webhook events...</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </section>
