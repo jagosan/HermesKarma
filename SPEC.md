@@ -155,6 +155,12 @@ Visual breakdown of cached prompt savings (KV-cache hits) and trajectory generat
 5.5 Ticket Linking (GitHub, Linear, Jira)
 Read-only cross-referencing between ticket keys (e.g., ENG-402, #104) and Hermes session IDs stored in ~/.hermes_karma/metadata.db.
 Automatic detection from git branch naming (feat/ENG-402-hermes-adapter).
+5.6 Multi-Node & AMD APU Fleet Telemetry Collector
+Tailscale mesh observability across heterogeneous compute nodes:
+• Beehive Coordinator: Local gateway host metrics (CPU load, RAM, disk, SQLite storage).
+• Chunkito AMD APU Worker (100.71.183.123): AMD Ryzen AI Max+ 395 Strix Halo APU telemetry with 118GB Unified VRAM (amdgpu.gttsize=120832), Ollama resident model tracking, VRAM allocation gauges, and OOM safety guard monitoring (OLLAMA_MAX_LOADED_MODELS=1 enforcement).
+• Live Telemetry Stream: Real-time SSE updates broadcast to the dashboard without polling overhead.
+
 6. API Endpoint Specification (FastAPI / Port 8020)
 Sessions & Replays
 GET /api/sessions: Query and filter sessions (pagination, platform, date range, model).
@@ -168,6 +174,12 @@ GET /api/memory: Current snapshot and update history for MEMORY.md and USER.md.
 Live Tracking & Terminal Control
 GET /api/live-sessions: Real-time session statuses streamed over SSE.
 POST /api/live-sessions/{session_id}/focus-terminal: Uses OS window manager commands (macOS AppleScript, Linux wmctrl/xdotool, or tmux select-pane) to bring the active terminal window to the front.
+Fleet & Node Telemetry
+GET /api/nodes: Real-time fleet overview, node health, APU VRAM utilization, and model residency.
+GET /api/nodes/{node_id}: Detailed hardware, memory, and Ollama metrics for a specific node.
+POST /api/nodes/refresh: On-demand live refresh across all fleet nodes.
+POST /api/nodes/{node_id}/refresh: On-demand live refresh for a single node.
+GET /api/nodes/{node_id}/models: Active resident models in VRAM and cached disk catalog.
 Tickets & Analytics
 GET /api/analytics/overview: High-level tokens, costs, cache rates, and tool distribution.
 POST /api/sessions/{session_id}/tickets: Link external ticket identifiers.

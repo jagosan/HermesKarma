@@ -45,6 +45,11 @@ When operating heterogeneous agent fleets across local models (Ollama, vLLM, lla
 - Scheduled cron job status and execution history tracking.
 - Ticket cross-referencing (Linear, GitHub, Jira) linked with session IDs in metadata.
 
+### 7. Multi-Node & AMD APU Fleet Telemetry Collector
+- Tailscale mesh observability across heterogeneous compute nodes (`beehive` coordinator and `chunkito` AMD APU remote worker at `100.71.183.123`).
+- **AMD Ryzen AI Max+ 395 (Strix Halo)** telemetry: 118GB Unified VRAM allocation gauge (`amdgpu.gttsize=120832`), Ollama resident model footprint, and `OLLAMA_MAX_LOADED_MODELS=1` OOM safety guard monitoring.
+- Real-time fleet health, latency, CPU/RAM utilization, and model catalog inspection via REST and SSE stream.
+
 ---
 
 ## 🏗️ Architecture
