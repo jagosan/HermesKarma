@@ -41,6 +41,8 @@ function switchTab(tabId) {
   else if (tabId === 'memory') loadMemory();
   else if (tabId === 'live') loadLiveSessions();
   else if (tabId === 'cron') loadCron();
+  else if (tabId === 'nodes') loadNodes();
+  else if (tabId === 'tickets') loadTickets();
 
   lucide.createIcons();
 }
@@ -680,9 +682,290 @@ function setupLiveStream() {
     } catch (err) {}
   });
 
+  liveEventSource.addEventListener('fleet_nodes_update', (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (currentTab === 'nodes') {
+        renderNodesGrid(data);
+      }
+      updateFleetStatusIndicators(data);
+    } catch (err) {}
+  });
+
   liveEventSource.onerror = () => {
     document.getElementById('liveCountText').innerText = 'Reconnecting...';
   };
+}
+
+function updateFleetStatusIndicators(nodes) {
+  if (!nodes || !Array.isArray(nodes)) return;
+  const beehive = nodes.find(n => n.node_id === 'beehive');
+  const chunkito = nodes.find(n => n.node_id === 'chunkito');
+
+  if (beehive) {
+    const el = document.getElementById('sidebarBeehiveStatus');
+    if (el) {
+      const isOnline = beehive.status === 'online' || beehive.status === 'warning';
+      el.className = isOnline ? 'text-emerald-400 text-[11px] flex items-center space-x-1' : 'text-slate-500 text-[11px] flex items-center space-x-1';
+      el.innerHTML = `<span class="w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-emerald-400' : 'bg-slate-500'} inline-block"></span><span>${isOnline ? 'Online (Local)' : 'Offline'}</span>`;
+    }
+  }
+
+  if (chunkito) {
+    const el = document.getElementById('sidebarChunkitoStatus');
+    if (el) {
+      const isOnline = chunkito.status === 'online' || chunkito.status === 'warning';
+      const modelsCount = chunkito.ollama?.loaded_models_count || 0;
+      el.className = isOnline ? 'text-indigo-400 text-[11px] flex items-center space-x-1' : 'text-slate-500 text-[11px] flex items-center space-x-1';
+      el.innerHTML = `<span class="w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-indigo-400 animate-pulse' : 'bg-slate-500'} inline-block"></span><span>${isOnline ? (modelsCount > 0 ? `118GB APU (${modelsCount} active)` : '118GB APU (idle)') : 'Offline'}</span>`;
+    }
+  }
+}
+
+// ----------------------------------------------------
+// FLEET & NODES TELEMETRY VIEW
+// ----------------------------------------------------
+async function loadNodes(force = false) {
+  try {
+    const res = await fetch(`/api/nodes?force_refresh=${force}`);
+    const data = await res.json();
+
+    // Update KPI Header
+    if (data.summary) {
+      document.getElementById('kpiFleetNodes').innerText = data.summary.total_nodes;
+      document.getElementById('kpiFleetOnlineSub').innerHTML = `
+        <span class="w-1.5 h-1.5 rounded-full ${data.summary.online_nodes > 0 ? 'bg-emerald-400' : 'bg-rose-400'} inline-block"></span>
+        <span>${data.summary.online_nodes} online (${data.summary.offline_nodes} offline)</span>
+      `;
+      document.getElementById('kpiTotalVram').innerText = `${data.summary.total_vram_gb.toFixed(1)} GB`;
+      document.getElementById('kpiVramUtil').innerText = `${data.summary.used_vram_gb.toFixed(1)} GB`;
+      document.getElementById('kpiVramUtilPct').innerText = `${data.summary.vram_utilization_pct}% allocated to models`;
+      document.getElementById('kpiActiveModels').innerText = data.summary.loaded_models_total;
+    }
+
+    const updatedEl = document.getElementById('nodesLastUpdated');
+    if (updatedEl) {
+      updatedEl.innerText = `Updated: ${new Date().toLocaleTimeString()}`;
+    }
+
+    updateFleetStatusIndicators(data.nodes);
+    renderNodesGrid(data.nodes);
+  } catch (err) {
+    console.error('Error loading nodes telemetry:', err);
+  }
+}
+
+function renderNodesGrid(nodes) {
+  const container = document.getElementById('nodesGrid');
+  if (!container) return;
+
+  if (!nodes || nodes.length === 0) {
+    container.innerHTML = `<div class="text-center py-12 text-slate-500 col-span-2">No fleet nodes configured.</div>`;
+    return;
+  }
+
+  container.innerHTML = nodes.map(n => {
+    const isOnline = n.status === 'online' || n.status === 'warning';
+    const isWarning = n.status === 'warning' || (n.ollama && n.ollama.overloaded);
+    
+    let statusBadge = `
+      <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-950/60 border border-emerald-500/30 text-emerald-400 flex items-center space-x-1.5">
+        <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+        <span>Online</span>
+      </span>
+    `;
+    if (isWarning) {
+      statusBadge = `
+        <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-950/60 border border-amber-500/30 text-amber-400 flex items-center space-x-1.5">
+          <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
+          <span>Warning (Limit)</span>
+        </span>
+      `;
+    } else if (!isOnline) {
+      statusBadge = `
+        <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-800 border border-slate-700 text-slate-400 flex items-center space-x-1.5">
+          <span class="w-2 h-2 rounded-full bg-slate-500"></span>
+          <span>Offline / Unreachable</span>
+        </span>
+      `;
+    }
+
+    const latencyText = n.latency_ms !== null ? `${n.latency_ms} ms` : 'N/A';
+    const tags = (n.tags || []).map(t => `<span class="px-2 py-0.5 rounded bg-slate-800/80 text-slate-300 text-[10px] font-mono border border-slate-700/60">${t}</span>`).join(' ');
+
+    const apu = n.apu_vram || {};
+    const totalVram = apu.total_gb || n.hardware?.vram_gb || 0;
+    const usedVram = apu.used_gb || 0;
+    const vramPct = apu.used_percent || (totalVram > 0 ? (usedVram / totalVram * 100).toFixed(1) : 0);
+
+    const mem = n.memory || {};
+    const cpu = n.cpu || {};
+
+    const ollama = n.ollama || {};
+    const loadedModels = ollama.loaded_models || [];
+    const availableModels = ollama.available_models || [];
+
+    const alerts = (n.alerts || []).map(a => `
+      <div class="p-2.5 rounded-lg bg-amber-950/40 border border-amber-500/30 text-amber-300 text-xs flex items-center space-x-2">
+        <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-400 shrink-0"></i>
+        <span>${escapeHtml(a)}</span>
+      </div>
+    `).join('');
+
+    return `
+      <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm space-y-5 flex flex-col justify-between">
+        <div class="space-y-4">
+          <!-- Node Header -->
+          <div class="flex items-start justify-between">
+            <div class="space-y-1">
+              <div class="flex items-center space-x-2.5">
+                <span class="text-xl">${n.is_local ? '🏠' : '⚡'}</span>
+                <h3 class="text-base font-bold text-white tracking-tight">${escapeHtml(n.name)}</h3>
+                <span class="px-2 py-0.5 rounded text-[10px] font-mono uppercase font-semibold ${n.is_local ? 'bg-slate-800 text-slate-300' : 'bg-indigo-950 border border-indigo-500/30 text-indigo-300'}">
+                  ${n.role || (n.is_local ? 'Coordinator' : 'Worker')}
+                </span>
+              </div>
+              <div class="text-xs text-slate-400 font-mono flex flex-wrap items-center gap-2 pt-0.5">
+                <span>IP: <span class="text-slate-200">${n.tailscale_ip || n.host}</span></span>
+                <span>•</span>
+                <span>Latency: <span class="text-brand-300 font-semibold">${latencyText}</span></span>
+                ${n.is_local ? '<span>•</span><span class="text-emerald-400">Local Gateway</span>' : '<span>•</span><span class="text-indigo-400">Tailscale</span>'}
+              </div>
+            </div>
+            ${statusBadge}
+          </div>
+
+          <!-- Tags -->
+          <div class="flex flex-wrap gap-1.5">
+            ${tags}
+          </div>
+
+          <!-- Alerts if any -->
+          ${alerts}
+
+          <!-- Hardware & APU/GPU Metrics -->
+          <div class="p-4 rounded-lg bg-dark-950/80 border border-slate-800/90 space-y-3">
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-slate-400 font-medium flex items-center space-x-1.5">
+                <i data-lucide="cpu" class="w-3.5 h-3.5 text-indigo-400"></i>
+                <span class="text-slate-200 font-semibold">${escapeHtml(n.hardware?.cpu || 'CPU')}</span>
+              </span>
+              <span class="text-slate-400 font-mono">${cpu.cores || 16} Cores / Load: ${cpu.load_1m !== undefined ? cpu.load_1m : '0.1'}</span>
+            </div>
+
+            <!-- APU Unified VRAM Visual Gauge -->
+            <div class="space-y-1.5 pt-1">
+              <div class="flex justify-between text-xs">
+                <span class="text-slate-300 font-medium flex items-center space-x-1.5">
+                  <i data-lucide="microchip" class="w-3.5 h-3.5 text-brand-400"></i>
+                  <span>${n.hardware?.gpu ? escapeHtml(n.hardware.gpu) : 'Unified Memory / VRAM'}</span>
+                </span>
+                <span class="font-mono text-xs">
+                  <strong class="text-brand-300">${usedVram.toFixed(1)} GB</strong>
+                  <span class="text-slate-500"> / ${totalVram.toFixed(1)} GB (${vramPct}%)</span>
+                </span>
+              </div>
+
+              <!-- Progress bar -->
+              <div class="w-full bg-dark-900 rounded-full h-2.5 overflow-hidden border border-slate-800">
+                <div class="h-full rounded-full transition-all duration-500 ${isWarning ? 'bg-gradient-to-r from-amber-500 to-rose-500' : 'bg-gradient-to-r from-brand-500 to-indigo-500'}" style="width: ${Math.min(100, Math.max(1, vramPct))}%"></div>
+              </div>
+
+              <div class="flex justify-between text-[11px] text-slate-500 font-mono pt-0.5">
+                <span>Free: ${(totalVram - usedVram).toFixed(1)} GB</span>
+                <span>${n.hardware?.gtt_size_mb ? `amdgpu.gttsize=${n.hardware.gtt_size_mb}MB` : `System RAM: ${mem.total_gb || 32}GB`}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Ollama Inference Engine & Loaded Models -->
+          <div class="p-4 rounded-lg bg-dark-950/80 border border-slate-800/90 space-y-3">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center space-x-2">
+                <i data-lucide="brain-circuit" class="w-4 h-4 text-emerald-400"></i>
+                <h4 class="text-xs font-bold text-slate-200">Local LLM Engine (Ollama)</h4>
+                ${ollama.version ? `<span class="px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 text-[10px] font-mono">v${ollama.version}</span>` : ''}
+              </div>
+              
+              <!-- Memory safety limit badge -->
+              <div class="text-[11px] font-mono">
+                <span class="px-2 py-0.5 rounded ${ollama.overloaded ? 'bg-rose-950/80 text-rose-300 border border-rose-500/40' : 'bg-emerald-950/60 text-emerald-300 border border-emerald-500/30'}">
+                  ${ollama.loaded_models_count || 0}/${ollama.max_loaded_models || 1} Model Slots
+                </span>
+              </div>
+            </div>
+
+            <!-- Active Resident Models in VRAM -->
+            ${loadedModels.length > 0 ? `
+              <div class="space-y-2 pt-1">
+                <div class="text-[11px] text-slate-400 font-semibold uppercase tracking-wider">Resident in VRAM:</div>
+                <div class="space-y-1.5">
+                  ${loadedModels.map(m => `
+                    <div class="p-2.5 rounded-lg bg-dark-900 border border-brand-500/30 flex items-center justify-between text-xs">
+                      <div>
+                        <div class="font-bold text-brand-300 font-mono">${escapeHtml(m.name || m.model)}</div>
+                        <div class="text-[10px] text-slate-400 font-mono mt-0.5">
+                          <span>${m.parameter_size || 'N/A'}</span> • <span>${m.quantization_level || 'Default Quant'}</span> • <span>VRAM: <strong class="text-slate-200">${m.size_vram_gb || m.size_gb || 0} GB</strong></span>
+                        </div>
+                      </div>
+                      <span class="px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-500/30 text-[10px] font-mono">ACTIVE</span>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            ` : `
+              <div class="py-3 px-3 rounded-lg bg-dark-900/60 border border-slate-800/60 text-center text-xs text-slate-500">
+                <span>No models resident in VRAM • APU memory free for on-demand inference</span>
+              </div>
+            `}
+
+            <!-- Available Cached Model Catalog -->
+            ${availableModels.length > 0 ? `
+              <div class="pt-2 border-t border-slate-800/60 text-xs">
+                <div class="text-[11px] text-slate-400 font-medium mb-1.5">Cached Models on Disk (${availableModels.length}):</div>
+                <div class="flex flex-wrap gap-1.5">
+                  ${availableModels.map(m => `
+                    <span class="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 text-[10px] font-mono" title="${m.size_gb} GB">
+                      ${escapeHtml(m.name)} <span class="text-slate-500">(${m.size_gb}GB)</span>
+                    </span>
+                  `).join('')}
+                </div>
+              </div>
+            ` : ''}
+          </div>
+        </div>
+
+        <!-- Node Card Footer / Controls -->
+        <div class="pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs">
+          <div class="text-slate-500 font-mono text-[11px]">
+            ${n.is_local ? 'Gateway Host' : 'Remote APU Worker (chunkito)'}
+          </div>
+          <button onclick="refreshSingleNode('${n.node_id}')" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center space-x-1.5 transition">
+            <i data-lucide="refresh-cw" class="w-3 h-3"></i>
+            <span>Refresh Node</span>
+          </button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  lucide.createIcons();
+}
+
+async function refreshAllNodes() {
+  await loadNodes(true);
+}
+
+async function refreshSingleNode(nodeId) {
+  try {
+    const res = await fetch(`/api/nodes/${nodeId}/refresh`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      await loadNodes(false);
+    }
+  } catch (err) {
+    alert(`Failed to refresh node ${nodeId}: ${err.message}`);
+  }
 }
 
 // ----------------------------------------------------
@@ -712,6 +995,46 @@ async function loadCron() {
     `).join('');
   } catch (err) {
     console.error(err);
+  }
+}
+
+// ----------------------------------------------------
+// TICKETS VIEW & WEBHOOK AUDIT LOG
+// ----------------------------------------------------
+async function loadTickets() {
+  await loadWebhookEvents();
+}
+
+async function loadWebhookEvents() {
+  const tbody = document.getElementById('webhookEventsBody');
+  if (!tbody) return;
+
+  try {
+    const res = await fetch('/api/webhooks/events?limit=20');
+    if (!res.ok) {
+      tbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-slate-500">No webhook receiver events logged yet.</td></tr>`;
+      return;
+    }
+    const data = await res.json();
+    const events = data.events || [];
+
+    if (events.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-slate-500">No webhook receiver events logged yet.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = events.map(e => `
+      <tr class="hover:bg-slate-800/30 transition">
+        <td class="py-2.5 px-4 text-slate-400">${new Date(e.created_at * 1000).toLocaleTimeString()}</td>
+        <td class="py-2.5 px-4 font-semibold text-brand-300 uppercase">${escapeHtml(e.provider)}</td>
+        <td class="py-2.5 px-4 text-slate-200">${escapeHtml(e.event_type)}</td>
+        <td class="py-2.5 px-4 text-emerald-400 font-bold">${escapeHtml(e.ticket_key || '-')}</td>
+        <td class="py-2.5 px-4 text-slate-400">${e.matched_sessions ? e.matched_sessions.length : 0} sessions</td>
+        <td class="py-2.5 px-4 text-slate-300">${escapeHtml(e.result || 'OK')}</td>
+      </tr>
+    `).join('');
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-slate-500">Webhook receiver ready (listening on /api/webhooks/*).</td></tr>`;
   }
 }
 

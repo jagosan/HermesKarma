@@ -4,6 +4,8 @@ import sqlite3
 import os
 import json
 import time
+import hmac
+import hashlib
 import tempfile
 import shutil
 from pathlib import Path
@@ -11,10 +13,13 @@ from fastapi.testclient import TestClient
 
 from api.main import app
 from api.services.hermes_reader import hermes_reader
-from api.services.metadata_service import MetadataService
+from api.services.metadata_service import metadata_service, MetadataService
 from api.services.live_tracker import LiveTracker
 from api.services.terminal_focus import terminal_focus_service
+from api.services.webhook_service import webhook_service
+from api.services.node_collector import node_collector, NodeTelemetryCollector
 from api.plugins.hermes_karma_hook import HermesKarmaHook
+from api.config import KARMA_METADATA_DB, DEFAULT_NODES
 
 
 class TestHermesKarma(unittest.TestCase):
@@ -22,9 +27,15 @@ class TestHermesKarma(unittest.TestCase):
         self.client = TestClient(app)
         self.temp_dir = tempfile.mkdtemp()
         self.db_file = Path(self.temp_dir) / "test_metadata.db"
-        self.metadata_service = MetadataService(db_path=self.db_file)
+        self.orig_db_path = metadata_service.db_path
+        
+        # Point global service to temp db for isolated testing
+        metadata_service.db_path = self.db_file
+        metadata_service._init_db()
+        self.metadata_service = metadata_service
 
     def tearDown(self):
+        metadata_service.db_path = self.orig_db_path
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_metadata_service_crud(self):
@@ -51,9 +62,28 @@ class TestHermesKarma(unittest.TestCase):
             ticket_key="#104",
             url="https://github.com/jagosan/HermesKarma/issues/104",
             title="Fix database lock contention",
+            status="open",
+            assignee="jagosan",
+            description="Details about db lock contention",
         )
         self.assertEqual(len(ticket_meta["tickets"]), 1)
         self.assertEqual(ticket_meta["tickets"][0]["ticket_key"], "#104")
+        self.assertEqual(ticket_meta["tickets"][0]["status"], "open")
+
+        # Update ticket status by key
+        updated_rows = self.metadata_service.update_ticket_status_by_key(
+            provider="github",
+            ticket_key="#104",
+            status="closed",
+        )
+        self.assertEqual(updated_rows, 1)
+        refetched = self.metadata_service.get_session_meta("test_session_1")
+        self.assertEqual(refetched["tickets"][0]["status"], "closed")
+
+        # Query tickets by session / query sessions by ticket
+        sessions = self.metadata_service.get_sessions_by_ticket("#104")
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0]["session_id"], "test_session_1")
 
         # Remove Ticket Link
         self.metadata_service.remove_ticket_link("test_session_1", "#104")
@@ -144,6 +174,348 @@ class TestHermesKarma(unittest.TestCase):
         sessions = tracker.get_live_sessions()
         matched = next((s for s in sessions if s["session_id"] == "test_hook_sess_001"), None)
         self.assertEqual(matched["status"], "ENDED")
+
+    # -----------------------------------------------------------------------
+    # TASK-HK-101 Webhook & Ticket Sync Tests
+    # -----------------------------------------------------------------------
+
+    def test_github_webhook_issues(self):
+        payload = {
+            "action": "opened",
+            "issue": {
+                "number": 105,
+                "title": "Fix memory pressure on Ollama node",
+                "html_url": "https://github.com/jagosan/HermesKarma/issues/105",
+                "state": "open",
+                "body": "Referenced in @session:default/20260817_112233_a1b2c3 when debugging chunkito.",
+                "assignee": {"login": "jagosan"}
+            }
+        }
+        res = self.client.post(
+            "/api/webhooks/github",
+            json=payload,
+            headers={"X-GitHub-Event": "issues", "X-GitHub-Delivery": "deliv-gh-101"}
+        )
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["ticket_key"], "#105")
+        self.assertIn("20260817_112233_a1b2c3", data["linked_sessions"])
+
+        # Check sessions by ticket endpoint
+        sess_res = self.client.get("/api/tickets/%23105/sessions")
+        self.assertEqual(sess_res.status_code, 200)
+        sess_data = sess_res.json()
+        self.assertEqual(sess_data["session_count"], 1)
+        self.assertEqual(sess_data["links"][0]["session_id"], "20260817_112233_a1b2c3")
+
+    def test_linear_webhook_issue(self):
+        payload = {
+            "action": "create",
+            "type": "Issue",
+            "data": {
+                "id": "lin_uuid_123",
+                "identifier": "ENG-402",
+                "title": "Telemetry ingest pipeline latency spike",
+                "url": "https://linear.app/team/issue/ENG-402",
+                "state": {"name": "In Progress"},
+                "description": "Session tracking trace at session_id: 20260817_140000_linear_test",
+                "branchName": "feat/ENG-402-telemetry"
+            }
+        }
+        res = self.client.post(
+            "/api/webhooks/linear",
+            json=payload,
+            headers={"Linear-Delivery": "lin-deliv-001"}
+        )
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["ticket_key"], "ENG-402")
+        self.assertEqual(data["status"], "In Progress")
+        self.assertIn("20260817_140000_linear_test", data["linked_sessions"])
+
+    def test_jira_webhook_issue(self):
+        payload = {
+            "webhookEvent": "jira:issue_created",
+            "issue": {
+                "key": "PROJ-789",
+                "self": "https://jira.company.com/rest/api/2/issue/10001",
+                "fields": {
+                    "summary": "Implement bi-directional webhook gateway",
+                    "status": {"name": "To Do"},
+                    "description": "Hermes session linked: hermes:20260817_153000_jira_test",
+                    "assignee": {"displayName": "Jago San"}
+                }
+            }
+        }
+        res = self.client.post("/api/webhooks/jira", json=payload)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["ticket_key"], "PROJ-789")
+        self.assertEqual(data["status"], "To Do")
+        self.assertIn("20260817_153000_jira_test", data["linked_sessions"])
+
+    def test_github_signature_verification(self):
+        secret = "super_secret_github_token"
+        webhook_service.github_secret = secret
+        payload = {"action": "closed", "issue": {"number": 99, "state": "closed"}}
+        body_bytes = json.dumps(payload).encode("utf-8")
+        
+        valid_sig = "sha256=" + hmac.new(secret.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
+        
+        # Test valid signature
+        res_valid = self.client.post(
+            "/api/webhooks/github",
+            content=body_bytes,
+            headers={"X-GitHub-Event": "issues", "X-Hub-Signature-256": valid_sig, "Content-Type": "application/json"}
+        )
+        self.assertEqual(res_valid.status_code, 200)
+
+        # Test invalid signature
+        res_invalid = self.client.post(
+            "/api/webhooks/github",
+            content=body_bytes,
+            headers={"X-GitHub-Event": "issues", "X-Hub-Signature-256": "sha256=invalid_sig", "Content-Type": "application/json"}
+        )
+        self.assertEqual(res_invalid.status_code, 401)
+        
+        # Reset secret
+        webhook_service.github_secret = ""
+
+    def test_webhook_status_and_events_api(self):
+        # Trigger an event first
+        self.client.post(
+            "/api/webhooks/github",
+            json={"action": "test", "issue": {"number": 1, "title": "Test"}},
+            headers={"X-GitHub-Event": "issues"}
+        )
+
+        status_res = self.client.get("/api/webhooks/status")
+        self.assertEqual(status_res.status_code, 200)
+        status_data = status_res.json()
+        self.assertIn("endpoints", status_data)
+        self.assertIn("stats", status_data)
+
+        events_res = self.client.get("/api/webhooks/events?limit=10")
+        self.assertEqual(events_res.status_code, 200)
+        events_data = events_res.json()
+        self.assertIn("events", events_data)
+        self.assertGreaterEqual(events_data["count"], 1)
+
+    def test_ticket_sync_endpoint(self):
+        # First link a ticket
+        self.client.post("/api/sessions/sess_sync_001/tickets", json={
+            "provider": "jira",
+            "ticket_key": "PROJ-101",
+            "title": "Initial Title",
+            "status": "In Progress"
+        })
+
+        # Now sync status
+        sync_res = self.client.post("/api/tickets/jira/PROJ-101/sync", json={
+            "status": "Done",
+            "title": "Completed Title"
+        })
+        self.assertEqual(sync_res.status_code, 200)
+        sync_data = sync_res.json()
+        self.assertTrue(sync_data["success"])
+        self.assertGreaterEqual(sync_data["rows_updated"], 1)
+
+        # Verify through list
+        list_res = self.client.get("/api/tickets?search=PROJ-101")
+        self.assertEqual(list_res.status_code, 200)
+        tickets = list_res.json()["tickets"]
+        self.assertEqual(len(tickets), 1)
+        self.assertEqual(tickets[0]["status"], "Done")
+
+    # -----------------------------------------------------------------------
+    # TASK-HK-103 Multi-Node Telemetry Collector Tests (Chunkito AMD APU)
+    # -----------------------------------------------------------------------
+
+    def test_node_collector_local_metrics(self):
+        collector = NodeTelemetryCollector()
+        cpu = collector._read_local_cpu()
+        self.assertIn("cores", cpu)
+        self.assertIn("load_1m", cpu)
+        self.assertIn("utilization_percent", cpu)
+
+        mem = collector._read_local_meminfo()
+        self.assertIn("total_gb", mem)
+        self.assertIn("used_gb", mem)
+        self.assertIn("free_gb", mem)
+        self.assertIn("used_percent", mem)
+
+        disk = collector._read_local_disk()
+        self.assertIn("total_gb", disk)
+        self.assertIn("used_gb", disk)
+
+    def test_node_collector_remote_mock_and_apu_vram(self):
+        collector = NodeTelemetryCollector()
+
+        # Mock query ollama endpoint for chunkito
+        async def mock_query(host, port, timeout_sec=2.5):
+            return {
+                "reachable": True,
+                "version": "0.5.4",
+                "latency_ms": 1.4,
+                "loaded_models": [
+                    {
+                        "name": "deepseek-v4:latest",
+                        "model": "deepseek-v4:latest",
+                        "size_bytes": 45 * 1024**3,
+                        "size_gb": 45.0,
+                        "size_vram_bytes": 45 * 1024**3,
+                        "size_vram_gb": 45.0,
+                        "parameter_size": "70B",
+                        "quantization_level": "Q4_K_M",
+                        "format": "gguf",
+                        "family": "deepseek2",
+                        "expires_at": "2026-08-17T23:59:59Z",
+                    }
+                ],
+                "available_models": [
+                    {
+                        "name": "deepseek-v4:latest",
+                        "size_gb": 45.0,
+                        "parameter_size": "70B",
+                        "quantization": "Q4_K_M",
+                    },
+                    {
+                        "name": "qwen2.5-coder:32b",
+                        "size_gb": 19.5,
+                        "parameter_size": "32B",
+                        "quantization": "Q4_K_M",
+                    }
+                ],
+                "error": None,
+            }
+
+        collector._query_ollama_endpoint = mock_query
+
+        chunkito_node = next(n for n in DEFAULT_NODES if n["id"] == "chunkito")
+        import asyncio
+        telemetry = asyncio.run(collector.collect_node_telemetry(chunkito_node))
+
+        self.assertEqual(telemetry["node_id"], "chunkito")
+        self.assertEqual(telemetry["status"], "online")
+        self.assertEqual(telemetry["latency_ms"], 1.4)
+        self.assertEqual(telemetry["apu_vram"]["total_gb"], 118.0)
+        self.assertEqual(telemetry["apu_vram"]["used_gb"], 45.0)
+        self.assertEqual(telemetry["apu_vram"]["free_gb"], 73.0)
+        self.assertAlmostEqual(telemetry["apu_vram"]["used_percent"], round(45.0 / 118.0 * 100, 1))
+
+        # Check ollama specs
+        self.assertEqual(telemetry["ollama"]["loaded_models_count"], 1)
+        self.assertEqual(telemetry["ollama"]["max_loaded_models"], 1)
+        self.assertFalse(telemetry["ollama"]["overloaded"])
+        self.assertEqual(len(telemetry["ollama"]["loaded_models"]), 1)
+        self.assertEqual(telemetry["ollama"]["loaded_models"][0]["parameter_size"], "70B")
+
+    def test_node_collector_overloaded_alert(self):
+        collector = NodeTelemetryCollector()
+
+        # Simulate 2 models loaded concurrently when max_loaded_models=1
+        async def mock_query_overloaded(host, port, timeout_sec=2.5):
+            return {
+                "reachable": True,
+                "version": "0.5.4",
+                "latency_ms": 2.1,
+                "loaded_models": [
+                    {
+                        "name": "deepseek-v4:latest",
+                        "size_vram_gb": 45.0,
+                        "parameter_size": "70B",
+                    },
+                    {
+                        "name": "qwen2.5-coder:32b",
+                        "size_vram_gb": 19.5,
+                        "parameter_size": "32B",
+                    }
+                ],
+                "available_models": [],
+                "error": None,
+            }
+
+        collector._query_ollama_endpoint = mock_query_overloaded
+        chunkito_node = next(n for n in DEFAULT_NODES if n["id"] == "chunkito")
+        import asyncio
+        telemetry = asyncio.run(collector.collect_node_telemetry(chunkito_node))
+
+        self.assertEqual(telemetry["status"], "warning")
+        self.assertTrue(telemetry["ollama"]["overloaded"])
+        self.assertEqual(telemetry["ollama"]["loaded_models_count"], 2)
+        self.assertTrue(any("Memory Safety Alert" in alert for alert in telemetry["alerts"]))
+
+    def test_node_collector_unreachable_node(self):
+        collector = NodeTelemetryCollector()
+
+        async def mock_query_down(host, port, timeout_sec=2.5):
+            return {
+                "reachable": False,
+                "version": None,
+                "latency_ms": None,
+                "loaded_models": [],
+                "available_models": [],
+                "error": "ConnectTimeout",
+            }
+
+        collector._query_ollama_endpoint = mock_query_down
+        chunkito_node = next(n for n in DEFAULT_NODES if n["id"] == "chunkito")
+        import asyncio
+        telemetry = asyncio.run(collector.collect_node_telemetry(chunkito_node))
+
+        self.assertEqual(telemetry["status"], "offline")
+        self.assertIsNone(telemetry["latency_ms"])
+        self.assertEqual(telemetry["ollama"]["loaded_models_count"], 0)
+        self.assertTrue(any("unreachable" in alert for alert in telemetry["alerts"]))
+
+    def test_api_nodes_endpoints(self):
+        # 1. GET /api/nodes
+        res = self.client.get("/api/nodes")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("summary", data)
+        self.assertIn("nodes", data)
+        self.assertGreaterEqual(data["summary"]["total_nodes"], 2)
+        self.assertIn("total_vram_gb", data["summary"])
+
+        # 2. GET /api/nodes/beehive
+        beehive_res = self.client.get("/api/nodes/beehive")
+        self.assertEqual(beehive_res.status_code, 200)
+        beehive_data = beehive_res.json()
+        self.assertEqual(beehive_data["node_id"], "beehive")
+        self.assertTrue(beehive_data["is_local"])
+
+        # 3. GET /api/nodes/chunkito
+        chunkito_res = self.client.get("/api/nodes/chunkito")
+        self.assertEqual(chunkito_res.status_code, 200)
+        chunkito_data = chunkito_res.json()
+        self.assertEqual(chunkito_data["node_id"], "chunkito")
+        self.assertEqual(chunkito_data["hardware"]["vram_gb"], 118)
+
+        # 4. GET /api/nodes/chunkito/models
+        models_res = self.client.get("/api/nodes/chunkito/models")
+        self.assertEqual(models_res.status_code, 200)
+        models_data = models_res.json()
+        self.assertEqual(models_data["node_id"], "chunkito")
+        self.assertIn("loaded_models", models_data)
+        self.assertIn("available_models", models_data)
+
+        # 5. GET /api/nodes/nonexistent_node -> 404
+        not_found_res = self.client.get("/api/nodes/nonexistent_node")
+        self.assertEqual(not_found_res.status_code, 404)
+
+        # 6. POST /api/nodes/refresh
+        refresh_res = self.client.post("/api/nodes/refresh")
+        self.assertEqual(refresh_res.status_code, 200)
+        self.assertTrue(refresh_res.json()["success"])
+
+        # 7. POST /api/nodes/beehive/refresh
+        refresh_single_res = self.client.post("/api/nodes/beehive/refresh")
+        self.assertEqual(refresh_single_res.status_code, 200)
+        self.assertTrue(refresh_single_res.json()["success"])
 
 
 if __name__ == "__main__":

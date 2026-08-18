@@ -67,12 +67,27 @@ class LiveTracker:
         return results
 
     async def stream_live_events(self, interval: float = 2.0) -> AsyncGenerator[Dict[str, Any], None]:
+        ticks = 0
         while True:
             live = self.get_live_sessions()
             yield {
                 "event": "live_sessions_update",
                 "data": json.dumps(live)
             }
+
+            # Every 5 ticks (~10s by default), emit fleet telemetry update
+            if ticks % 5 == 0:
+                try:
+                    from api.services.node_collector import node_collector
+                    nodes_data = await node_collector.get_all_nodes_telemetry(force_refresh=False)
+                    yield {
+                        "event": "fleet_nodes_update",
+                        "data": json.dumps(nodes_data)
+                    }
+                except Exception:
+                    pass
+
+            ticks += 1
             await asyncio.sleep(interval)
 
 
