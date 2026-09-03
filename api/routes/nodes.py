@@ -15,7 +15,13 @@ async def get_nodes(force_refresh: bool = Query(False, description="Bypass cache
     online_nodes = sum(1 for n in nodes if n.get("status") in ["online", "warning"])
     total_vram_gb = sum(n.get("apu_vram", {}).get("total_gb", 0) for n in nodes)
     used_vram_gb = sum(n.get("apu_vram", {}).get("used_gb", 0) for n in nodes)
-    loaded_models_total = sum(n.get("ollama", {}).get("loaded_models_count", 0) for n in nodes)
+    loaded_models_total = sum(
+        n.get("inference_engine", {}).get("loaded_models_count", n.get("ollama", {}).get("loaded_models_count", 0))
+        for n in nodes
+    )
+    active_slots_total = sum(
+        n.get("inference_engine", {}).get("slot_summary", {}).get("active_slots", 0) for n in nodes
+    )
 
     return {
         "summary": {
@@ -26,6 +32,7 @@ async def get_nodes(force_refresh: bool = Query(False, description="Bypass cache
             "used_vram_gb": round(used_vram_gb, 2),
             "vram_utilization_pct": round((used_vram_gb / total_vram_gb * 100), 1) if total_vram_gb > 0 else 0.0,
             "loaded_models_total": loaded_models_total,
+            "active_slots_total": active_slots_total,
         },
         "nodes": nodes,
     }
@@ -70,16 +77,21 @@ async def get_node_models(node_id: str):
     if not node:
         raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
 
+    inf = node.get("inference_engine", {})
     ollama = node.get("ollama", {})
     return {
         "node_id": node_id,
         "node_name": node.get("name"),
         "status": node.get("status"),
-        "ollama_version": ollama.get("version"),
-        "max_loaded_models": ollama.get("max_loaded_models", 1),
-        "loaded_models_count": ollama.get("loaded_models_count", 0),
-        "overloaded": ollama.get("overloaded", False),
-        "loaded_models": ollama.get("loaded_models", []),
-        "available_models": ollama.get("available_models", []),
+        "backend_type": inf.get("backend_type", "unknown"),
+        "version": inf.get("version") or ollama.get("version"),
+        "max_loaded_models": inf.get("max_loaded_models", ollama.get("max_loaded_models", 1)),
+        "loaded_models_count": inf.get("loaded_models_count", ollama.get("loaded_models_count", 0)),
+        "overloaded": inf.get("overloaded", ollama.get("overloaded", False)),
+        "loaded_models": inf.get("loaded_models", ollama.get("loaded_models", [])),
+        "available_models": inf.get("available_models", ollama.get("available_models", [])),
+        "slots": inf.get("slots", []),
+        "slot_summary": inf.get("slot_summary", {}),
         "apu_vram": node.get("apu_vram", {}),
+        "amdgpu": node.get("amdgpu", {}),
     }

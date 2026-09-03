@@ -1,5 +1,5 @@
 """Hermes Agent Data Reader Service.
-Connects to ~/.hermes/state.db in Read-Only WAL mode and parses config, skills, memory, and cron.
+Connects to ~/.hermes/state.db in Read-Only WAL mode and parses config, skills, memory, cron, and complete multi-model usage.
 """
 import sqlite3
 import os
@@ -35,6 +35,93 @@ class HermesReader:
         cur.execute("PRAGMA query_only = ON;")
         return conn
 
+    def get_all_distinct_models(self) -> List[Dict[str, Any]]:
+        """Retrieve all distinct models used across sessions, subagents, and config."""
+        conn = self._get_ro_conn()
+        if not conn:
+            return []
+
+        models_map = {}
+        with conn:
+            cur = conn.cursor()
+            # 1. From session_model_usage
+            try:
+                cur.execute("""
+                    SELECT 
+                        model,
+                        COALESCE(billing_provider, '') as provider,
+                        COUNT(DISTINCT session_id) as session_count,
+                        SUM(api_call_count) as total_calls
+                    FROM session_model_usage
+                    WHERE model IS NOT NULL AND model != ''
+                    GROUP BY model
+                    ORDER BY total_calls DESC
+                """)
+                for r in cur.fetchall():
+                    m = dict(r)
+                    models_map[m["model"]] = {
+                        "name": m["model"],
+                        "provider": m.get("provider") or self._classify_provider(m["model"]),
+                        "session_count": m.get("session_count", 0),
+                        "total_calls": m.get("total_calls", 0),
+                        "is_local": self._is_local_model(m["model"], m.get("provider")),
+                    }
+            except Exception:
+                pass
+
+            # 2. From sessions table
+            try:
+                cur.execute("""
+                    SELECT DISTINCT model, COUNT(*) as cnt
+                    FROM sessions
+                    WHERE model IS NOT NULL AND model != ''
+                    GROUP BY model
+                """)
+                for r in cur.fetchall():
+                    m_name = r[0]
+                    if m_name not in models_map:
+                        models_map[m_name] = {
+                            "name": m_name,
+                            "provider": self._classify_provider(m_name),
+                            "session_count": r[1],
+                            "total_calls": r[1],
+                            "is_local": self._is_local_model(m_name, ""),
+                        }
+            except Exception:
+                pass
+
+        return sorted(list(models_map.values()), key=lambda x: (not x["is_local"], x["name"]))
+
+    def _is_local_model(self, model_name: str, provider: Optional[str] = "") -> bool:
+        """Determine if a model is served locally (Ollama / chunkito / llama.cpp / GGUF)."""
+        m = (model_name or "").lower()
+        p = (provider or "").lower()
+        if p in ["ollama", "chunkito", "custom", "local", "vllm", "llamacpp"]:
+            return True
+        if any(k in m for k in [
+            "qwen", "gemma", "deepseek", "gpt-oss", "gguf", "ud-iq2", "chunkito",
+            "llama", "mistral", "phi", "strix", "local", ":q8_", ":iq", ":UD-"
+        ]):
+            return True
+        return False
+
+    def _classify_provider(self, model_name: str) -> str:
+        """Infer provider category for display tags."""
+        m = (model_name or "").lower()
+        if "gemini" in m:
+            return "Google Gemini"
+        elif "claude" in m or "sonnet" in m or "opus" in m:
+            return "Anthropic Claude"
+        elif "chunkito" in m or "qwen3.8" in m:
+            return "Chunkito APU"
+        elif "deepseek" in m:
+            return "Chunkito / Local"
+        elif "qwen" in m or "gemma" in m or "gpt-oss" in m:
+            return "Local Ollama / GGUF"
+        elif "openrouter" in m:
+            return "OpenRouter"
+        return "Custom / Self-Hosted"
+
     def get_sessions(
         self,
         limit: int = 50,
@@ -47,7 +134,7 @@ class HermesReader:
     ) -> Dict[str, Any]:
         conn = self._get_ro_conn()
         if not conn:
-            return {"total": 0, "sessions": [], "limit": limit, "offset": offset}
+            return {"total": 0, "sessions": [], "limit": limit, "offset": offset, "all_models": []}
 
         with conn:
             cur = conn.cursor()
@@ -58,16 +145,21 @@ class HermesReader:
                 conditions.append("source = ?")
                 params.append(source)
             if model:
-                conditions.append("model LIKE ?")
-                params.append(f"%{model}%")
+                # Search both sessions.model AND session_model_usage.model for complete coverage
+                conditions.append("""(
+                    sessions.model LIKE ? 
+                    OR sessions.id IN (SELECT session_id FROM session_model_usage WHERE model LIKE ?)
+                    OR sessions.id IN (SELECT origin_session FROM async_delegations WHERE event_json LIKE ? OR task_json LIKE ?)
+                )""")
+                params.extend([f"%{model}%", f"%{model}%", f"%{model}%", f"%{model}%"])
             if search:
-                conditions.append("(title LIKE ? OR id LIKE ? OR cwd LIKE ?)")
-                params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+                conditions.append("(sessions.title LIKE ? OR sessions.id LIKE ? OR sessions.cwd LIKE ? OR sessions.git_branch LIKE ?)")
+                params.extend([f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%"])
             if date_from:
-                conditions.append("started_at >= ?")
+                conditions.append("sessions.started_at >= ?")
                 params.append(date_from)
             if date_to:
-                conditions.append("started_at <= ?")
+                conditions.append("sessions.started_at <= ?")
                 params.append(date_to)
 
             where_clause = " AND ".join(conditions)
@@ -85,6 +177,43 @@ class HermesReader:
             """, params + [limit, offset])
             rows = cur.fetchall()
 
+            session_ids = [r["id"] for r in rows]
+
+            # Batch fetch model usages for all returned sessions
+            usage_by_session: Dict[str, List[Dict[str, Any]]] = {}
+            if session_ids:
+                placeholders = ",".join(["?"] * len(session_ids))
+                try:
+                    cur.execute(f"""
+                        SELECT session_id, model, billing_provider, api_call_count, input_tokens, output_tokens, cache_read_tokens, reasoning_tokens, estimated_cost_usd
+                        FROM session_model_usage
+                        WHERE session_id IN ({placeholders})
+                        ORDER BY input_tokens DESC
+                    """, session_ids)
+                    for ur in cur.fetchall():
+                        sid = ur["session_id"]
+                        if sid not in usage_by_session:
+                            usage_by_session[sid] = []
+                        usage_by_session[sid].append(dict(ur))
+                except Exception:
+                    pass
+
+            # Batch fetch subagents/delegations count
+            delegations_by_session: Dict[str, int] = {}
+            if session_ids:
+                placeholders = ",".join(["?"] * len(session_ids))
+                try:
+                    cur.execute(f"""
+                        SELECT origin_session, COUNT(*) as cnt
+                        FROM async_delegations
+                        WHERE origin_session IN ({placeholders})
+                        GROUP BY origin_session
+                    """, session_ids)
+                    for dr in cur.fetchall():
+                        delegations_by_session[dr["origin_session"]] = dr["cnt"]
+                except Exception:
+                    pass
+
             # Merge with metadata
             meta_map = metadata_service.get_all_session_metadata_map()
             sessions = []
@@ -99,6 +228,20 @@ class HermesReader:
                     "tickets": [],
                     "custom_name": None
                 })
+                # Attach comprehensive model usage list
+                item["models_used"] = usage_by_session.get(sid, [])
+                if not item["models_used"] and item.get("model"):
+                    item["models_used"] = [{
+                        "model": item.get("model"),
+                        "billing_provider": item.get("billing_provider") or "",
+                        "input_tokens": item.get("input_tokens") or 0,
+                        "output_tokens": item.get("output_tokens") or 0,
+                        "cache_read_tokens": item.get("cache_read_tokens") or 0,
+                        "reasoning_tokens": item.get("reasoning_tokens") or 0,
+                        "estimated_cost_usd": item.get("estimated_cost_usd") or 0.0,
+                    }]
+                item["subagent_count"] = delegations_by_session.get(sid, 0)
+
                 # Check for auto ticket detection from git_branch
                 branch = item.get("git_branch") or ""
                 detected_ticket = self._extract_ticket_from_branch(branch)
@@ -111,6 +254,7 @@ class HermesReader:
                 "sessions": sessions,
                 "limit": limit,
                 "offset": offset,
+                "all_models": self.get_all_distinct_models(),
             }
 
     def _get_table_columns(self, cur: sqlite3.Cursor, table_name: str) -> List[str]:
@@ -137,7 +281,7 @@ class HermesReader:
             session = dict(row)
             session["session_id"] = session["id"]
             session["metadata"] = metadata_service.get_session_meta(session_id)
-            
+
             # Fetch model usage breakdown
             cur.execute("SELECT * FROM session_model_usage WHERE session_id = ?", (session_id,))
             session["model_usages"] = [dict(r) for r in cur.fetchall()]
@@ -303,7 +447,7 @@ class HermesReader:
             return delegations
 
     def get_analytics_overview(self) -> Dict[str, Any]:
-        """Aggregate total tokens, costs, models, and tools."""
+        """Aggregate total tokens, costs, models, and tools with full multi-model and local vs cloud precision."""
         conn = self._get_ro_conn()
         if not conn:
             return {
@@ -314,51 +458,147 @@ class HermesReader:
                 "total_cache_read_tokens": 0,
                 "total_cache_write_tokens": 0,
                 "total_reasoning_tokens": 0,
+                "total_api_calls": 0,
                 "total_estimated_cost_usd": 0.0,
                 "total_actual_cost_usd": 0.0,
                 "local_sessions_count": 0,
                 "cloud_sessions_count": 0,
+                "local_tokens_total": 0,
+                "cloud_tokens_total": 0,
+                "local_zero_cost_ratio_pct": 0.0,
+                "cache_hit_rate_pct": 0.0,
                 "model_distribution": [],
-                "source_distribution": [],
+                "provider_distribution": [],
                 "tool_distribution": [],
                 "daily_activity": [],
             }
 
         with conn:
             cur = conn.cursor()
-            # Basic aggregations
+
+            # 1. Total sessions and message counts from sessions table
             cur.execute("""
                 SELECT 
                     COUNT(*) as total_sessions,
-                    SUM(message_count) as total_messages,
-                    SUM(input_tokens) as total_input_tokens,
-                    SUM(output_tokens) as total_output_tokens,
-                    SUM(cache_read_tokens) as total_cache_read_tokens,
-                    SUM(cache_write_tokens) as total_cache_write_tokens,
-                    SUM(reasoning_tokens) as total_reasoning_tokens,
-                    SUM(estimated_cost_usd) as total_estimated_cost_usd,
-                    SUM(actual_cost_usd) as total_actual_cost_usd
+                    SUM(message_count) as total_messages
                 FROM sessions
             """)
-            summary_row = cur.fetchone()
-            summary = dict(summary_row) if summary_row else {}
+            sess_summary = dict(cur.fetchone() or {})
 
-            # Provider / Model distribution
+            # 2. Comprehensive Model usage breakdown from session_model_usage
             cur.execute("""
                 SELECT 
                     COALESCE(model, 'Unknown') as model,
-                    COUNT(*) as session_count,
+                    COUNT(DISTINCT session_id) as session_count,
+                    SUM(api_call_count) as api_call_count,
                     SUM(input_tokens) as input_tokens,
                     SUM(output_tokens) as output_tokens,
                     SUM(cache_read_tokens) as cache_read_tokens,
-                    SUM(estimated_cost_usd) as cost_usd
-                FROM sessions
+                    SUM(cache_write_tokens) as cache_write_tokens,
+                    SUM(reasoning_tokens) as reasoning_tokens,
+                    SUM(estimated_cost_usd) as cost_usd,
+                    COALESCE(billing_provider, '') as billing_provider
+                FROM session_model_usage
                 GROUP BY model
-                ORDER BY session_count DESC
+                ORDER BY (SUM(input_tokens) + SUM(output_tokens)) DESC
             """)
-            models = [dict(r) for r in cur.fetchall()]
+            model_rows = [dict(r) for r in cur.fetchall()]
 
-            # Source platform distribution
+            # Fallback to sessions table if session_model_usage was empty
+            if not model_rows:
+                cur.execute("""
+                    SELECT 
+                        COALESCE(model, 'Unknown') as model,
+                        COUNT(*) as session_count,
+                        SUM(api_call_count) as api_call_count,
+                        SUM(input_tokens) as input_tokens,
+                        SUM(output_tokens) as output_tokens,
+                        SUM(cache_read_tokens) as cache_read_tokens,
+                        SUM(cache_write_tokens) as cache_write_tokens,
+                        SUM(reasoning_tokens) as reasoning_tokens,
+                        SUM(estimated_cost_usd) as cost_usd,
+                        COALESCE(billing_provider, '') as billing_provider
+                    FROM sessions
+                    GROUP BY model
+                    ORDER BY (SUM(input_tokens) + SUM(output_tokens)) DESC
+                """)
+                model_rows = [dict(r) for r in cur.fetchall()]
+
+            # Annotate model rows with is_local and readable provider tag
+            total_input = 0
+            total_output = 0
+            total_cache_read = 0
+            total_cache_write = 0
+            total_reasoning = 0
+            total_api_calls = 0
+            total_cost = 0.0
+
+            local_tokens = 0
+            cloud_tokens = 0
+            local_sessions = 0
+            cloud_sessions = 0
+
+            enhanced_models = []
+            for m in model_rows:
+                inp = m.get("input_tokens") or 0
+                out = m.get("output_tokens") or 0
+                cread = m.get("cache_read_tokens") or 0
+                cwrite = m.get("cache_write_tokens") or 0
+                reas = m.get("reasoning_tokens") or 0
+                calls = m.get("api_call_count") or 0
+                cost = m.get("cost_usd") or 0.0
+                scnt = m.get("session_count") or 0
+
+                total_input += inp
+                total_output += out
+                total_cache_read += cread
+                total_cache_write += cwrite
+                total_reasoning += reas
+                total_api_calls += calls
+                total_cost += cost
+
+                is_local = self._is_local_model(m.get("model", ""), m.get("billing_provider", ""))
+                m["is_local"] = is_local
+                m["provider_category"] = self._classify_provider(m.get("model", ""))
+
+                if is_local:
+                    local_tokens += (inp + out)
+                    local_sessions += scnt
+                else:
+                    cloud_tokens += (inp + out)
+                    cloud_sessions += scnt
+
+                enhanced_models.append(m)
+
+            # 3. Provider distribution
+            provider_map: Dict[str, Dict[str, Any]] = {}
+            for m in enhanced_models:
+                p_name = m["provider_category"]
+                if p_name not in provider_map:
+                    provider_map[p_name] = {
+                        "provider": p_name,
+                        "session_count": 0,
+                        "api_call_count": 0,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cache_read_tokens": 0,
+                        "cost_usd": 0.0,
+                        "is_local": m["is_local"],
+                    }
+                provider_map[p_name]["session_count"] += m.get("session_count", 0)
+                provider_map[p_name]["api_call_count"] += m.get("api_call_count", 0)
+                provider_map[p_name]["input_tokens"] += m.get("input_tokens", 0)
+                provider_map[p_name]["output_tokens"] += m.get("output_tokens", 0)
+                provider_map[p_name]["cache_read_tokens"] += m.get("cache_read_tokens", 0)
+                provider_map[p_name]["cost_usd"] += m.get("cost_usd", 0.0)
+
+            provider_distribution = sorted(
+                list(provider_map.values()),
+                key=lambda x: (x["input_tokens"] + x["output_tokens"]),
+                reverse=True
+            )
+
+            # 4. Source platform distribution
             cur.execute("""
                 SELECT 
                     COALESCE(source, 'cli') as source,
@@ -369,7 +609,7 @@ class HermesReader:
             """)
             sources = [dict(r) for r in cur.fetchall()]
 
-            # Tool usage distribution from messages
+            # 5. Tool usage distribution from messages
             cur.execute("""
                 SELECT 
                     tool_name,
@@ -382,7 +622,7 @@ class HermesReader:
             """)
             tools = [dict(r) for r in cur.fetchall()]
 
-            # Daily activity (last 30 days)
+            # 6. Daily activity (last 30 days)
             cur.execute("""
                 SELECT 
                     strftime('%Y-%m-%d', datetime(started_at, 'unixepoch')) as date,
@@ -396,27 +636,30 @@ class HermesReader:
             """)
             daily = [dict(r) for r in cur.fetchall()]
 
-            # Count local vs cloud
-            local_count = 0
-            cloud_count = 0
-            for m in models:
-                m_name = (m.get("model") or "").lower()
-                if "ollama" in m_name or "local" in m_name or "gguf" in m_name or "vllm" in m_name or "chunkito" in m_name:
-                    local_count += m.get("session_count", 0)
-                else:
-                    cloud_count += m.get("session_count", 0)
-
             # KV Cache hit rate calculation
-            total_in = summary.get("total_input_tokens") or 0
-            cache_read = summary.get("total_cache_read_tokens") or 0
-            cache_hit_rate = round((cache_read / (total_in + cache_read) * 100), 2) if (total_in + cache_read) > 0 else 0.0
+            total_prompt_processed = total_input + total_cache_read
+            cache_hit_rate = round((total_cache_read / total_prompt_processed * 100), 2) if total_prompt_processed > 0 else 0.0
+            zero_cost_ratio = round((local_tokens / (local_tokens + cloud_tokens) * 100), 1) if (local_tokens + cloud_tokens) > 0 else 0.0
 
             return {
-                **summary,
-                "local_sessions_count": local_count,
-                "cloud_sessions_count": cloud_count,
+                "total_sessions": sess_summary.get("total_sessions") or 0,
+                "total_messages": sess_summary.get("total_messages") or 0,
+                "total_input_tokens": total_input,
+                "total_output_tokens": total_output,
+                "total_cache_read_tokens": total_cache_read,
+                "total_cache_write_tokens": total_cache_write,
+                "total_reasoning_tokens": total_reasoning,
+                "total_api_calls": total_api_calls,
+                "total_estimated_cost_usd": round(total_cost, 4),
+                "total_actual_cost_usd": round(total_cost, 4),
+                "local_sessions_count": local_sessions,
+                "cloud_sessions_count": cloud_sessions,
+                "local_tokens_total": local_tokens,
+                "cloud_tokens_total": cloud_tokens,
+                "local_zero_cost_ratio_pct": zero_cost_ratio,
                 "cache_hit_rate_pct": cache_hit_rate,
-                "model_distribution": models,
+                "model_distribution": enhanced_models,
+                "provider_distribution": provider_distribution,
                 "source_distribution": sources,
                 "tool_distribution": tools,
                 "daily_activity": daily,
@@ -473,8 +716,6 @@ class HermesReader:
         if not matched:
             return {"error": "Skill not found"}
 
-        # Look up snapshots from metadata.db if any
-        # Also generate section analysis / evolution breakdown
         return {
             "skill": matched,
             "history": [

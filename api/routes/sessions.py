@@ -1,10 +1,9 @@
 """Sessions API endpoints for Hermes Karma."""
 from fastapi import APIRouter, HTTPException, Query
-from typing import Optional
+from typing import Optional, List
 from api.services.hermes_reader import hermes_reader
 from api.services.metadata_service import metadata_service
 from pydantic import BaseModel
-from typing import List
 
 router = APIRouter(prefix="/api/sessions", tags=["Sessions"])
 
@@ -26,7 +25,7 @@ def list_sessions(
     date_from: Optional[float] = None,
     date_to: Optional[float] = None,
 ):
-    """Retrieve filtered sessions list with metadata and ticket links."""
+    """Retrieve filtered sessions list with multi-model usage breakdown and ticket links."""
     return hermes_reader.get_sessions(
         limit=limit,
         offset=offset,
@@ -38,9 +37,17 @@ def list_sessions(
     )
 
 
+@router.get("/models/catalog")
+def get_models_catalog():
+    """Retrieve all distinct models and providers discovered across sessions and subagents."""
+    return {
+        "models": hermes_reader.get_all_distinct_models()
+    }
+
+
 @router.get("/{session_id}")
 def get_session(session_id: str):
-    """Retrieve session details, model usage, and transcript."""
+    """Retrieve session details, model usage breakdown, and transcript."""
     session = hermes_reader.get_session_by_id(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
