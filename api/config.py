@@ -34,7 +34,7 @@ DEFAULT_NODES = [
             "cpu": "AMD Ryzen 7 8845HS (16 threads)",
             "ram_gb": 32,
             "gpu": "Radeon 780M iGPU",
-            "vram_gb": 4,
+            "vram_gb": 16,
             "max_loaded_models": 1,
         },
         "tags": ["gateway", "coordinator", "sqlite", "fastapi", "beehive"],

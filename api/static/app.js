@@ -469,9 +469,24 @@ async function triggerFocusActive() {
 // ----------------------------------------------------
 // ANALYTICS VIEW
 // ----------------------------------------------------
+let currentAnalyticsRange = 'all';
+
+async function setAnalyticsTimeRange(range) {
+  currentAnalyticsRange = range;
+  document.querySelectorAll('.time-range-btn').forEach(btn => {
+    if (btn.getAttribute('data-range') === range) {
+      btn.className = 'time-range-btn px-3 py-1 rounded font-medium transition bg-brand-500/20 text-brand-300 border border-brand-500/30';
+    } else {
+      btn.className = 'time-range-btn px-3 py-1 rounded font-medium transition text-slate-400 hover:text-white';
+    }
+  });
+  await loadAnalytics();
+}
+window.setAnalyticsTimeRange = setAnalyticsTimeRange;
+
 async function loadAnalytics() {
   try {
-    const res = await fetch('/api/analytics/overview');
+    const res = await fetch(`/api/analytics/overview?time_range=${currentAnalyticsRange}`);
     const data = await res.json();
 
     document.getElementById('statTotalSessions').innerText = data.total_sessions.toLocaleString();

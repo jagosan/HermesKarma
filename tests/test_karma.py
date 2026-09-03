@@ -628,6 +628,15 @@ class TestHermesKarma(unittest.TestCase):
         self.assertIn("total_reasoning_tokens", data)
         self.assertIn("total_api_calls", data)
 
+    def test_analytics_time_range_filtering(self):
+        for tr in ["today", "7d", "30d", "all"]:
+            res = self.client.get(f"/api/analytics/overview?time_range={tr}")
+            self.assertEqual(res.status_code, 200)
+            data = res.json()
+            self.assertEqual(data.get("time_range"), tr)
+            self.assertIn("model_distribution", data)
+            self.assertIn("total_input_tokens", data)
+
 
 if __name__ == "__main__":
     unittest.main()
