@@ -6,9 +6,22 @@ const pageSize = 25;
 let activeSessionId = null;
 let currentSessionData = null;
 let modelChartInstance = null;
+let providerChartInstance = null;
 let toolChartInstance = null;
 let allSkills = [];
+let allDiscoveredModels = [];
 let liveEventSource = null;
+
+// Helper to escape HTML characters
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -65,6 +78,12 @@ function setPlatformFilter(platform) {
   loadSessions();
 }
 
+function onModelSelectChange(val) {
+  document.getElementById('filterModel').value = val;
+  currentPage = 0;
+  loadSessions();
+}
+
 async function loadSessions() {
   const tbody = document.getElementById('sessionsTableBody');
   const search = document.getElementById('sessionSearch').value;
@@ -83,6 +102,11 @@ async function loadSessions() {
     const res = await fetch(`/api/sessions?${params.toString()}`);
     const data = await res.json();
     
+    // Update model dropdown if returned
+    if (data.all_models && Array.isArray(data.all_models)) {
+      populateModelDropdown(data.all_models);
+    }
+
     document.getElementById('paginationInfo').innerText = `Showing ${Math.min(data.total, currentPage * pageSize + 1)} - ${Math.min(data.total, (currentPage + 1) * pageSize)} of ${data.total} sessions`;
     document.getElementById('prevPageBtn').disabled = currentPage === 0;
     document.getElementById('nextPageBtn').disabled = (currentPage + 1) * pageSize >= data.total;
@@ -94,7 +118,8 @@ async function loadSessions() {
 
     tbody.innerHTML = data.sessions.map(s => {
       const started = s.started_at ? new Date(s.started_at * 1000).toLocaleString() : 'Unknown';
-      const cost = s.estimated_cost_usd !== null ? `$${s.estimated_cost_usd.toFixed(4)}` : '$0.00';
+      const costVal = s.estimated_cost_usd !== null ? s.estimated_cost_usd : 0.0;
+      const cost = costVal > 0 ? `$${costVal.toFixed(4)}` : '$0.00';
       const source = s.source || 'cli';
       const title = s.title || s.session_id.substring(0, 16);
       const branch = s.git_branch ? `<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 text-[10px] font-mono"><i data-lucide="git-branch" class="w-2.5 h-2.5 inline"></i> ${s.git_branch}</span>` : '';
@@ -106,15 +131,38 @@ async function loadSessions() {
       const detectedTicket = s.detected_ticket ? 
         `<span class="px-1.5 py-0.5 rounded bg-amber-950/60 border border-amber-500/30 text-amber-300 text-[10px] font-mono" title="Auto-detected from git branch">${s.detected_ticket}*</span>` : '';
 
+      const subagentBadge = (s.subagent_count && s.subagent_count > 0) ?
+        `<span class="px-1.5 py-0.5 rounded bg-indigo-950/80 border border-indigo-500/30 text-indigo-300 text-[10px] font-mono flex items-center space-x-1" title="${s.subagent_count} subagents dispatched"><i data-lucide="bot" class="w-2.5 h-2.5"></i><span>${s.subagent_count} sub</span></span>` : '';
+
+      // Render comprehensive models used badges
+      const modelsList = s.models_used || [];
+      let modelPills = '';
+      if (modelsList.length > 0) {
+        modelPills = modelsList.map(m => {
+          const mName = m.model || 'unknown';
+          const isLocal = mName.includes('qwen') || mName.includes('chunkito') || mName.includes('deepseek') || mName.includes('gemma') || mName.includes('gpt-oss') || mName.includes('gguf');
+          const badgeBg = isLocal ? 'bg-indigo-950/80 text-indigo-300 border-indigo-500/30' : 'bg-brand-950/80 text-brand-300 border-brand-500/30';
+          return `<span class="px-1.5 py-0.5 rounded border text-[10px] font-mono truncate max-w-[150px] inline-block ${badgeBg}" title="${mName} (${(m.input_tokens || 0).toLocaleString()} tok)">${mName}</span>`;
+        }).join(' ');
+      } else {
+        const topModel = s.model || 'default';
+        modelPills = `<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] font-mono truncate max-w-[150px] inline-block">${topModel}</span>`;
+      }
+
+      const totalTok = (s.input_tokens || 0) + (s.output_tokens || 0);
+      const cacheTok = s.cache_read_tokens || 0;
+      const reasTok = s.reasoning_tokens || 0;
+
       return `
         <tr class="hover:bg-slate-800/30 transition group cursor-pointer" onclick="openSessionTimeline('${s.session_id}')">
           <td class="py-3 px-4 max-w-xs">
-            <div class="font-medium text-slate-200 truncate group-hover:text-brand-400 transition" title="${title}">${title}</div>
-            <div class="text-[11px] text-slate-400 font-mono truncate flex items-center space-x-1.5 mt-0.5">
+            <div class="font-medium text-slate-200 truncate group-hover:text-brand-400 transition" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
+            <div class="text-[11px] text-slate-400 font-mono truncate flex flex-wrap items-center gap-1.5 mt-0.5">
               <span>${s.session_id}</span>
               ${branch}
               ${tickets}
               ${detectedTicket}
+              ${subagentBadge}
             </div>
           </td>
           <td class="py-3 px-3">
@@ -122,19 +170,22 @@ async function loadSessions() {
               ${source}
             </span>
           </td>
-          <td class="py-3 px-3 font-mono text-xs text-slate-300 truncate max-w-[140px]" title="${s.model || 'Default'}">
-            ${s.model || 'default'}
+          <td class="py-3 px-3 text-xs">
+            <div class="flex flex-col gap-1 max-w-[180px]">
+              ${modelPills}
+            </div>
           </td>
           <td class="py-3 px-3 text-xs text-slate-300 font-mono">
             <div>${s.message_count || 0} msgs</div>
             <div class="text-slate-400 text-[11px]">${s.tool_call_count || 0} tools</div>
           </td>
           <td class="py-3 px-3 text-xs text-slate-300 font-mono">
-            <div>${((s.input_tokens || 0) + (s.output_tokens || 0)).toLocaleString()} tok</div>
-            <div class="text-emerald-400 text-[11px]" title="Cache read tokens">${(s.cache_read_tokens || 0).toLocaleString()} cache</div>
+            <div>${totalTok.toLocaleString()} tok</div>
+            <div class="text-emerald-400 text-[10px]" title="Cache read tokens">${cacheTok.toLocaleString()} cache</div>
+            ${reasTok > 0 ? `<div class="text-purple-400 text-[10px]" title="Reasoning tokens">${reasTok.toLocaleString()} reason</div>` : ''}
           </td>
-          <td class="py-3 px-3 text-xs font-mono font-semibold ${cost === '$0.00' ? 'text-emerald-400' : 'text-amber-400'}">
-            ${cost}
+          <td class="py-3 px-3 text-xs font-mono font-semibold ${costVal === 0 ? 'text-emerald-400' : 'text-amber-400'}">
+            ${costVal === 0 ? '<span class="text-emerald-400 bg-emerald-950/60 border border-emerald-500/20 px-1.5 py-0.5 rounded text-[11px]">$0.00 (APU)</span>' : cost}
           </td>
           <td class="py-3 px-3 text-xs text-slate-400 whitespace-nowrap">
             ${started}
@@ -154,6 +205,20 @@ async function loadSessions() {
   }
 }
 
+function populateModelDropdown(models) {
+  allDiscoveredModels = models;
+  const select = document.getElementById('filterModelSelect');
+  if (!select) return;
+  const currentVal = select.value;
+
+  const options = ['<option value="">All Models</option>'];
+  models.forEach(m => {
+    const locTag = m.is_local ? '⚡ ' : '☁️ ';
+    options.push(`<option value="${escapeHtml(m.name)}" ${m.name === currentVal ? 'selected' : ''}>${locTag}${escapeHtml(m.name)}</option>`);
+  });
+  select.innerHTML = options.join('');
+}
+
 function getPlatformBadgeClass(p) {
   const map = {
     cli: 'bg-emerald-950/40 text-emerald-400 border border-emerald-500/20',
@@ -161,8 +226,9 @@ function getPlatformBadgeClass(p) {
     telegram: 'bg-sky-950/40 text-sky-400 border border-sky-500/20',
     discord: 'bg-purple-950/40 text-purple-400 border border-purple-500/20',
     slack: 'bg-amber-950/40 text-amber-400 border border-amber-500/20',
+    cron: 'bg-rose-950/40 text-rose-400 border border-rose-500/20',
   };
-  return map[p.toLowerCase()] || 'bg-slate-800 text-slate-300';
+  return map[(p || '').toLowerCase()] || 'bg-slate-800 text-slate-300';
 }
 
 function changePage(delta) {
@@ -258,15 +324,13 @@ function renderTimelineEvents(events) {
 
     return `
       <div class="relative group">
-        <!-- Node Marker -->
         <div class="absolute -left-[30px] top-1.5 w-6 h-6 rounded-full ${iconBg} flex items-center justify-center text-xs shadow-md">
           <i data-lucide="${icon}" class="w-3.5 h-3.5"></i>
         </div>
 
-        <!-- Event Card -->
         <div class="border ${cardBg} rounded-xl p-4 shadow-sm text-xs space-y-2">
           <div class="flex items-center justify-between">
-            <span class="font-semibold text-slate-200 uppercase tracking-wider text-[11px]">${e.title}</span>
+            <span class="font-semibold text-slate-200 uppercase tracking-wider text-[11px]">${escapeHtml(e.title)}</span>
             <div class="flex items-center space-x-2 text-slate-400 font-mono text-[10px]">
               <span>Step #${e.step_number}</span>
               <span>•</span>
@@ -324,7 +388,7 @@ function renderSubagents(delegations) {
         <span class="px-2 py-0.5 rounded text-[10px] font-bold ${d.state === 'completed' ? 'bg-emerald-950 text-emerald-400' : 'bg-amber-950 text-amber-400'} uppercase">${d.state}</span>
       </div>
       <div class="text-slate-400 text-[11px]">Dispatched: ${d.dispatched_at ? new Date(d.dispatched_at * 1000).toLocaleString() : ''}</div>
-      ${d.task_parsed ? `<div class="text-slate-300 bg-dark-900 p-2 rounded border border-slate-800 font-mono text-[11px] whitespace-pre-wrap">${JSON.stringify(d.task_parsed, null, 2)}</div>` : ''}
+      ${d.task_parsed ? `<div class="text-slate-300 bg-dark-900 p-2 rounded border border-slate-800 font-mono text-[11px] whitespace-pre-wrap">${escapeHtml(JSON.stringify(d.task_parsed, null, 2))}</div>` : ''}
     </div>
   `).join('');
 }
@@ -411,33 +475,45 @@ async function loadAnalytics() {
     const data = await res.json();
 
     document.getElementById('statTotalSessions').innerText = data.total_sessions.toLocaleString();
-    document.getElementById('statTotalMessages').innerText = `${(data.total_messages || 0).toLocaleString()} total turns`;
+    document.getElementById('statTotalMessages').innerText = `${(data.total_messages || 0).toLocaleString()} turns • ${(data.total_api_calls || 0).toLocaleString()} API calls`;
     
     const totalTokens = (data.total_input_tokens || 0) + (data.total_output_tokens || 0);
     document.getElementById('statTotalTokens').innerText = totalTokens.toLocaleString();
-    document.getElementById('statTokensSub').innerText = `In: ${(data.total_input_tokens || 0).toLocaleString()} | Out: ${(data.total_output_tokens || 0).toLocaleString()}`;
+    document.getElementById('statTokensSub').innerText = `In: ${(data.total_input_tokens || 0).toLocaleString()} | Out: ${(data.total_output_tokens || 0).toLocaleString()} | Reason: ${(data.total_reasoning_tokens || 0).toLocaleString()}`;
 
     document.getElementById('statCacheHitRate').innerText = `${data.cache_hit_rate_pct || 0}%`;
-    document.getElementById('statCacheRead').innerText = `${(data.total_cache_read_tokens || 0).toLocaleString()} cached tokens`;
+    document.getElementById('statCacheRead').innerText = `${(data.total_cache_read_tokens || 0).toLocaleString()} cached read tokens`;
 
     document.getElementById('statTotalCost').innerText = `$${(data.total_estimated_cost_usd || 0).toFixed(2)}`;
-    document.getElementById('statLocalSessions').innerText = `${data.local_sessions_count || 0} local sessions ($0.00)`;
+    document.getElementById('statLocalSessions').innerText = `${data.local_zero_cost_ratio_pct || 0}% local free tokens (${(data.local_sessions_count || 0).toLocaleString()} APU sessions)`;
 
     // Render Charts
     renderAnalyticsCharts(data);
 
     // Render Models Table
     const tbody = document.getElementById('modelsTableBody');
-    tbody.innerHTML = (data.model_distribution || []).map(m => `
-      <tr class="hover:bg-slate-800/40">
-        <td class="py-2.5 px-3 font-semibold text-slate-200">${m.model}</td>
-        <td class="py-2.5 px-3">${(m.session_count || 0).toLocaleString()}</td>
-        <td class="py-2.5 px-3 text-slate-400">${(m.input_tokens || 0).toLocaleString()}</td>
-        <td class="py-2.5 px-3 text-slate-400">${(m.output_tokens || 0).toLocaleString()}</td>
-        <td class="py-2.5 px-3 text-emerald-400">${(m.cache_read_tokens || 0).toLocaleString()}</td>
-        <td class="py-2.5 px-3 ${m.cost_usd ? 'text-amber-400 font-bold' : 'text-emerald-400'}">$${(m.cost_usd || 0).toFixed(4)}</td>
-      </tr>
-    `).join('');
+    tbody.innerHTML = (data.model_distribution || []).map(m => {
+      const isLoc = m.is_local;
+      const tagBadge = isLoc ? 
+        '<span class="px-1.5 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-500/30 text-[10px] font-mono">⚡ APU / Local</span>' : 
+        `<span class="px-1.5 py-0.5 rounded bg-brand-950/80 text-brand-300 border border-brand-500/30 text-[10px] font-mono">☁️ ${m.provider_category || 'Cloud'}</span>`;
+
+      const costStr = m.cost_usd && m.cost_usd > 0 ? `$${m.cost_usd.toFixed(4)}` : '<span class="text-emerald-400">$0.00 (APU)</span>';
+
+      return `
+        <tr class="hover:bg-slate-800/40">
+          <td class="py-2.5 px-3 font-semibold text-slate-200">${escapeHtml(m.model)}</td>
+          <td class="py-2.5 px-3">${tagBadge}</td>
+          <td class="py-2.5 px-3">${(m.session_count || 0).toLocaleString()}</td>
+          <td class="py-2.5 px-3 text-slate-400">${(m.api_call_count || 0).toLocaleString()}</td>
+          <td class="py-2.5 px-3 text-slate-400">${(m.input_tokens || 0).toLocaleString()}</td>
+          <td class="py-2.5 px-3 text-slate-400">${(m.output_tokens || 0).toLocaleString()}</td>
+          <td class="py-2.5 px-3 text-emerald-400">${(m.cache_read_tokens || 0).toLocaleString()}</td>
+          <td class="py-2.5 px-3 text-purple-400">${(m.reasoning_tokens || 0).toLocaleString()}</td>
+          <td class="py-2.5 px-3 font-bold">${costStr}</td>
+        </tr>
+      `;
+    }).join('');
 
   } catch (err) {
     console.error(err);
@@ -445,32 +521,62 @@ async function loadAnalytics() {
 }
 
 function renderAnalyticsCharts(data) {
-  // Model chart
+  // 1. Model chart
   const modelCtx = document.getElementById('modelChart');
   if (modelChartInstance) modelChartInstance.destroy();
 
   const modelLabels = (data.model_distribution || []).map(m => m.model);
-  const modelCounts = (data.model_distribution || []).map(m => m.session_count);
+  const modelTokens = (data.model_distribution || []).map(m => (m.input_tokens || 0) + (m.output_tokens || 0));
 
   modelChartInstance = new Chart(modelCtx, {
     type: 'doughnut',
     data: {
       labels: modelLabels,
       datasets: [{
-        data: modelCounts,
-        backgroundColor: ['#8b5cf6', '#6366f1', '#10b981', '#f59e0b', '#ec4899', '#06b6d4']
+        data: modelTokens,
+        backgroundColor: ['#8b5cf6', '#6366f1', '#10b981', '#f59e0b', '#ec4899', '#06b6d4', '#3b82f6', '#14b8a6', '#a855f7', '#e11d48']
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
-        legend: { position: 'bottom', labels: { color: '#94a3b8', font: { size: 10 } } }
+        legend: { position: 'bottom', labels: { color: '#94a3b8', font: { size: 9 }, boxWidth: 10 } }
       }
     }
   });
 
-  // Tool chart
+  // 2. Provider breakdown chart
+  const providerCtx = document.getElementById('providerChart');
+  if (providerChartInstance) providerChartInstance.destroy();
+
+  const providerLabels = (data.provider_distribution || []).map(p => p.provider);
+  const providerTokens = (data.provider_distribution || []).map(p => (p.input_tokens || 0) + (p.output_tokens || 0));
+
+  providerChartInstance = new Chart(providerCtx, {
+    type: 'bar',
+    data: {
+      labels: providerLabels,
+      datasets: [{
+        label: 'Tokens',
+        data: providerTokens,
+        backgroundColor: ['#10b981', '#8b5cf6', '#6366f1', '#f59e0b', '#06b6d4']
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { color: '#94a3b8', font: { size: 9 } } },
+        y: { ticks: { color: '#94a3b8', font: { size: 9 } } }
+      },
+      plugins: {
+        legend: { display: false }
+      }
+    }
+  });
+
+  // 3. Tool chart
   const toolCtx = document.getElementById('toolChart');
   if (toolChartInstance) toolChartInstance.destroy();
 
@@ -491,8 +597,8 @@ function renderAnalyticsCharts(data) {
       responsive: true,
       maintainAspectRatio: false,
       scales: {
-        x: { ticks: { color: '#94a3b8', font: { size: 10 } } },
-        y: { ticks: { color: '#94a3b8', font: { size: 10 } } }
+        x: { ticks: { color: '#94a3b8', font: { size: 9 } } },
+        y: { ticks: { color: '#94a3b8', font: { size: 9 } } }
       },
       plugins: {
         legend: { display: false }
@@ -525,8 +631,8 @@ function renderSkillsList(skills) {
 
   container.innerHTML = skills.map(s => `
     <div class="p-3 hover:bg-slate-800/50 cursor-pointer transition" onclick="selectSkill('${s.name}')">
-      <div class="font-bold text-slate-200 text-xs font-mono">${s.name}</div>
-      <div class="text-[11px] text-slate-400 truncate mt-0.5">${s.description || 'No description'}</div>
+      <div class="font-bold text-slate-200 text-xs font-mono">${escapeHtml(s.name)}</div>
+      <div class="text-[11px] text-slate-400 truncate mt-0.5">${escapeHtml(s.description || 'No description')}</div>
       <div class="flex items-center space-x-2 mt-1.5 text-[10px] text-slate-500">
         <span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-medium">${s.category}</span>
         <span>v${s.version}</span>
@@ -619,20 +725,20 @@ function renderLiveCards(sessions) {
             <span class="text-xs text-slate-400 font-mono">${s.platform || 'cli'}</span>
           </div>
 
-          <h3 class="font-bold text-slate-200 text-sm truncate" title="${s.title}">${s.title || 'Session'}</h3>
+          <h3 class="font-bold text-slate-200 text-sm truncate" title="${escapeHtml(s.title)}">${escapeHtml(s.title || 'Session')}</h3>
           <p class="text-xs text-slate-400 font-mono truncate">${s.session_id}</p>
 
           ${s.current_tool ? `
             <div class="p-2 rounded bg-dark-950 border border-amber-500/30 text-amber-300 font-mono text-xs flex items-center space-x-2">
               <i data-lucide="terminal" class="w-3.5 h-3.5"></i>
-              <span>Running: <strong>${s.current_tool}</strong></span>
+              <span>Running: <strong>${escapeHtml(s.current_tool)}</strong></span>
             </div>
           ` : ''}
 
           <div class="text-[11px] text-slate-400 font-mono space-y-0.5 pt-2 border-t border-slate-800/60">
             <div>PID: <span class="text-slate-200">${s.pid || 'N/A'}</span></div>
             <div>Pane: <span class="text-slate-200">${s.tmux_pane || 'N/A'}</span></div>
-            <div class="truncate">Dir: <span class="text-slate-200">${s.working_directory || '~'}</span></div>
+            <div class="truncate">Dir: <span class="text-slate-200">${escapeHtml(s.working_directory || '~')}</span></div>
           </div>
         </div>
 
@@ -715,7 +821,7 @@ function updateFleetStatusIndicators(nodes) {
     const el = document.getElementById('sidebarChunkitoStatus');
     if (el) {
       const isOnline = chunkito.status === 'online' || chunkito.status === 'warning';
-      const modelsCount = chunkito.ollama?.loaded_models_count || 0;
+      const modelsCount = chunkito.inference_engine?.loaded_models_count || chunkito.ollama?.loaded_models_count || 0;
       el.className = isOnline ? 'text-indigo-400 text-[11px] flex items-center space-x-1' : 'text-slate-500 text-[11px] flex items-center space-x-1';
       el.innerHTML = `<span class="w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-indigo-400 animate-pulse' : 'bg-slate-500'} inline-block"></span><span>${isOnline ? (modelsCount > 0 ? `118GB APU (${modelsCount} active)` : '118GB APU (idle)') : 'Offline'}</span>`;
     }
@@ -723,7 +829,7 @@ function updateFleetStatusIndicators(nodes) {
 }
 
 // ----------------------------------------------------
-// FLEET & NODES TELEMETRY VIEW
+// FLEET & NODES TELEMETRY VIEW (BTOP & AMDGPU_TOP DASHBOARD)
 // ----------------------------------------------------
 async function loadNodes(force = false) {
   try {
@@ -732,15 +838,19 @@ async function loadNodes(force = false) {
 
     // Update KPI Header
     if (data.summary) {
-      document.getElementById('kpiFleetNodes').innerText = data.summary.total_nodes;
+      document.getElementById('kpiFleetNodes').innerText = `${data.summary.total_nodes} Nodes`;
       document.getElementById('kpiFleetOnlineSub').innerHTML = `
         <span class="w-1.5 h-1.5 rounded-full ${data.summary.online_nodes > 0 ? 'bg-emerald-400' : 'bg-rose-400'} inline-block"></span>
         <span>${data.summary.online_nodes} online (${data.summary.offline_nodes} offline)</span>
       `;
       document.getElementById('kpiTotalVram').innerText = `${data.summary.total_vram_gb.toFixed(1)} GB`;
       document.getElementById('kpiVramUtil').innerText = `${data.summary.used_vram_gb.toFixed(1)} GB`;
-      document.getElementById('kpiVramUtilPct').innerText = `${data.summary.vram_utilization_pct}% allocated to models`;
-      document.getElementById('kpiActiveModels').innerText = data.summary.loaded_models_total;
+      document.getElementById('kpiVramUtilPct').innerText = `${data.summary.vram_utilization_pct}% allocated to resident models`;
+      document.getElementById('kpiActiveModels').innerText = `${data.summary.loaded_models_total} Loaded`;
+      const activeSlotsSub = document.getElementById('kpiActiveSlotsSub');
+      if (activeSlotsSub) {
+        activeSlotsSub.innerText = `${data.summary.active_slots_total || 0} active inference slot(s)`;
+      }
     }
 
     const updatedEl = document.getElementById('nodesLastUpdated');
@@ -766,11 +876,11 @@ function renderNodesGrid(nodes) {
 
   container.innerHTML = nodes.map(n => {
     const isOnline = n.status === 'online' || n.status === 'warning';
-    const isWarning = n.status === 'warning' || (n.ollama && n.ollama.overloaded);
+    const isWarning = n.status === 'warning' || (n.inference_engine && n.inference_engine.overloaded);
     
     let statusBadge = `
       <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-950/60 border border-emerald-500/30 text-emerald-400 flex items-center space-x-1.5">
-        <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
         <span>Online</span>
       </span>
     `;
@@ -800,10 +910,15 @@ function renderNodesGrid(nodes) {
 
     const mem = n.memory || {};
     const cpu = n.cpu || {};
+    const gpu = n.amdgpu || {};
+    const disk = n.disk || {};
 
-    const ollama = n.ollama || {};
-    const loadedModels = ollama.loaded_models || [];
-    const availableModels = ollama.available_models || [];
+    const inf = n.inference_engine || n.ollama || {};
+    const backendName = inf.backend_type || 'llama.cpp (llama-server)';
+    const loadedModels = inf.loaded_models || [];
+    const availableModels = inf.available_models || [];
+    const slots = inf.slots || [];
+    const slotSumm = inf.slot_summary || {};
 
     const alerts = (n.alerts || []).map(a => `
       <div class="p-2.5 rounded-lg bg-amber-950/40 border border-amber-500/30 text-amber-300 text-xs flex items-center space-x-2">
@@ -829,7 +944,7 @@ function renderNodesGrid(nodes) {
                 <span>IP: <span class="text-slate-200">${n.tailscale_ip || n.host}</span></span>
                 <span>•</span>
                 <span>Latency: <span class="text-brand-300 font-semibold">${latencyText}</span></span>
-                ${n.is_local ? '<span>•</span><span class="text-emerald-400">Local Gateway</span>' : '<span>•</span><span class="text-indigo-400">Tailscale</span>'}
+                ${n.is_local ? '<span>•</span><span class="text-emerald-400 font-medium">Local Gateway</span>' : '<span>•</span><span class="text-indigo-400 font-medium">Tailscale Mesh</span>'}
               </div>
             </div>
             ${statusBadge}
@@ -843,22 +958,24 @@ function renderNodesGrid(nodes) {
           <!-- Alerts if any -->
           ${alerts}
 
-          <!-- Hardware & APU/GPU Metrics -->
-          <div class="p-4 rounded-lg bg-dark-950/80 border border-slate-800/90 space-y-3">
-            <div class="flex items-center justify-between text-xs">
-              <span class="text-slate-400 font-medium flex items-center space-x-1.5">
-                <i data-lucide="cpu" class="w-3.5 h-3.5 text-indigo-400"></i>
-                <span class="text-slate-200 font-semibold">${escapeHtml(n.hardware?.cpu || 'CPU')}</span>
-              </span>
-              <span class="text-slate-400 font-mono">${cpu.cores || 16} Cores / Load: ${cpu.load_1m !== undefined ? cpu.load_1m : '0.1'}</span>
+          <!-- 1. AMDGPU TOP & UNIFIED MEMORY GAUGE -->
+          <div class="p-4 rounded-xl bg-dark-950 border border-slate-800 space-y-3">
+            <div class="flex items-center justify-between border-b border-slate-800/80 pb-2">
+              <div class="flex items-center space-x-2">
+                <i data-lucide="microchip" class="w-4 h-4 text-brand-400"></i>
+                <h4 class="text-xs font-bold text-slate-200 uppercase tracking-wider">amdgpu_top & APU Unified Pool</h4>
+              </div>
+              <div class="text-[11px] font-mono text-slate-400">
+                ${gpu.power_w ? `<span class="text-amber-300">${gpu.power_w}W</span> • ` : ''}
+                ${gpu.temperature_c ? `<span class="text-emerald-300">${gpu.temperature_c}°C</span>` : ''}
+              </div>
             </div>
 
-            <!-- APU Unified VRAM Visual Gauge -->
-            <div class="space-y-1.5 pt-1">
+            <!-- APU Unified VRAM Progress Bar -->
+            <div class="space-y-1.5">
               <div class="flex justify-between text-xs">
                 <span class="text-slate-300 font-medium flex items-center space-x-1.5">
-                  <i data-lucide="microchip" class="w-3.5 h-3.5 text-brand-400"></i>
-                  <span>${n.hardware?.gpu ? escapeHtml(n.hardware.gpu) : 'Unified Memory / VRAM'}</span>
+                  <span>${escapeHtml(n.hardware?.gpu || 'AMD APU Unified Memory')}</span>
                 </span>
                 <span class="font-mono text-xs">
                   <strong class="text-brand-300">${usedVram.toFixed(1)} GB</strong>
@@ -866,52 +983,102 @@ function renderNodesGrid(nodes) {
                 </span>
               </div>
 
-              <!-- Progress bar -->
-              <div class="w-full bg-dark-900 rounded-full h-2.5 overflow-hidden border border-slate-800">
-                <div class="h-full rounded-full transition-all duration-500 ${isWarning ? 'bg-gradient-to-r from-amber-500 to-rose-500' : 'bg-gradient-to-r from-brand-500 to-indigo-500'}" style="width: ${Math.min(100, Math.max(1, vramPct))}%"></div>
+              <div class="w-full bg-dark-900 rounded-full h-3 overflow-hidden border border-slate-800 relative">
+                <div class="h-full rounded-full transition-all duration-500 ${isWarning ? 'bg-gradient-to-r from-amber-500 to-rose-500' : 'bg-gradient-to-r from-brand-500 via-indigo-500 to-emerald-400'}" style="width: ${Math.min(100, Math.max(1, vramPct))}%"></div>
               </div>
 
-              <div class="flex justify-between text-[11px] text-slate-500 font-mono pt-0.5">
-                <span>Free: ${(totalVram - usedVram).toFixed(1)} GB</span>
+              <div class="flex justify-between text-[11px] text-slate-400 font-mono pt-0.5">
+                <span>Free Headroom: <strong class="text-slate-200">${(totalVram - usedVram).toFixed(1)} GB</strong></span>
                 <span>${n.hardware?.gtt_size_mb ? `amdgpu.gttsize=${n.hardware.gtt_size_mb}MB` : `System RAM: ${mem.total_gb || 32}GB`}</span>
+              </div>
+            </div>
+
+            <!-- GTT & GPU Load Spark metrics -->
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 font-mono text-[11px]">
+              <div class="p-2 rounded bg-dark-900 border border-slate-800/80">
+                <div class="text-slate-500 text-[10px]">GPU Core Load</div>
+                <div class="text-white font-bold">${gpu.gpu_busy_percent !== undefined ? gpu.gpu_busy_percent : 0}%</div>
+              </div>
+              <div class="p-2 rounded bg-dark-900 border border-slate-800/80">
+                <div class="text-slate-500 text-[10px]">GTT Allocation</div>
+                <div class="text-indigo-300 font-bold">${gpu.gtt_total_gb || (totalVram > 32 ? '118.0 GB' : '7.4 GB')}</div>
+              </div>
+              <div class="p-2 rounded bg-dark-900 border border-slate-800/80">
+                <div class="text-slate-500 text-[10px]">GPU Temp</div>
+                <div class="text-emerald-400 font-bold">${gpu.temperature_c || 26.0}°C</div>
+              </div>
+              <div class="p-2 rounded bg-dark-900 border border-slate-800/80">
+                <div class="text-slate-500 text-[10px]">Power / TDP</div>
+                <div class="text-amber-400 font-bold">${gpu.power_w ? `${gpu.power_w}W` : '10W / 45W'}</div>
               </div>
             </div>
           </div>
 
-          <!-- Ollama Inference Engine & Loaded Models -->
-          <div class="p-4 rounded-lg bg-dark-950/80 border border-slate-800/90 space-y-3">
-            <div class="flex items-center justify-between">
+          <!-- 2. BTOP HARDWARE & SYSTEM TELEMETRY -->
+          <div class="p-4 rounded-xl bg-dark-950 border border-slate-800 space-y-3">
+            <div class="flex items-center justify-between border-b border-slate-800/80 pb-2">
               <div class="flex items-center space-x-2">
-                <i data-lucide="brain-circuit" class="w-4 h-4 text-emerald-400"></i>
-                <h4 class="text-xs font-bold text-slate-200">Local LLM Engine (Ollama)</h4>
-                ${ollama.version ? `<span class="px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 text-[10px] font-mono">v${ollama.version}</span>` : ''}
+                <i data-lucide="cpu" class="w-4 h-4 text-indigo-400"></i>
+                <h4 class="text-xs font-bold text-slate-200 uppercase tracking-wider">btop System Telemetry</h4>
               </div>
-              
-              <!-- Memory safety limit badge -->
-              <div class="text-[11px] font-mono">
-                <span class="px-2 py-0.5 rounded ${ollama.overloaded ? 'bg-rose-950/80 text-rose-300 border border-rose-500/40' : 'bg-emerald-950/60 text-emerald-300 border border-emerald-500/30'}">
-                  ${ollama.loaded_models_count || 0}/${ollama.max_loaded_models || 1} Model Slots
-                </span>
+              <div class="text-[11px] font-mono text-slate-400">
+                Load: <strong class="text-slate-200">${cpu.load_1m || '0.1'}</strong>, ${cpu.load_5m || '0.1'}, ${cpu.load_15m || '0.1'}
               </div>
             </div>
 
-            <!-- Active Resident Models in VRAM -->
-            ${loadedModels.length > 0 ? `
-              <div class="space-y-2 pt-1">
-                <div class="text-[11px] text-slate-400 font-semibold uppercase tracking-wider">Resident in VRAM:</div>
-                <div class="space-y-1.5">
-                  ${loadedModels.map(m => `
-                    <div class="p-2.5 rounded-lg bg-dark-900 border border-brand-500/30 flex items-center justify-between text-xs">
-                      <div>
-                        <div class="font-bold text-brand-300 font-mono">${escapeHtml(m.name || m.model)}</div>
-                        <div class="text-[10px] text-slate-400 font-mono mt-0.5">
-                          <span>${m.parameter_size || 'N/A'}</span> • <span>${m.quantization_level || 'Default Quant'}</span> • <span>VRAM: <strong class="text-slate-200">${m.size_vram_gb || m.size_gb || 0} GB</strong></span>
-                        </div>
-                      </div>
-                      <span class="px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-500/30 text-[10px] font-mono">ACTIVE</span>
-                    </div>
-                  `).join('')}
+            <div class="grid grid-cols-2 gap-3 text-xs">
+              <!-- CPU Details -->
+              <div class="p-2.5 rounded-lg bg-dark-900 border border-slate-800 space-y-1">
+                <div class="text-[10px] text-slate-400 font-mono uppercase font-semibold">Processor & Cores</div>
+                <div class="text-white font-medium truncate" title="${cpu.model_name || n.hardware?.cpu}">${cpu.model_name || n.hardware?.cpu || 'AMD Ryzen'}</div>
+                <div class="text-[11px] text-slate-400 font-mono">
+                  <span>${cpu.cores || 16} Cores</span> • <span>Util: <strong class="text-indigo-300">${cpu.utilization_percent || 5}%</strong></span> • <span>Temp: <strong class="text-emerald-400">${cpu.temperature_c || 32}°C</strong></span>
                 </div>
+              </div>
+
+              <!-- RAM Details -->
+              <div class="p-2.5 rounded-lg bg-dark-900 border border-slate-800 space-y-1">
+                <div class="text-[10px] text-slate-400 font-mono uppercase font-semibold">System Memory & Swap</div>
+                <div class="text-white font-medium font-mono">${mem.used_gb || 8} GB / ${mem.total_gb || 32} GB <span class="text-slate-400 text-[11px]">(${mem.used_percent || 25}%)</span></div>
+                <div class="text-[10px] text-slate-400 font-mono">
+                  <span>Avail: ${mem.available_gb || mem.free_gb || 24}GB</span> • <span>Cached: ${mem.cached_gb || 0}GB</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 3. INFERENCE ENGINE & RESIDENT VRAM MODELS -->
+          <div class="p-4 rounded-xl bg-dark-950 border border-slate-800 space-y-3">
+            <div class="flex items-center justify-between border-b border-slate-800/80 pb-2">
+              <div class="flex items-center space-x-2">
+                <i data-lucide="brain-circuit" class="w-4 h-4 text-emerald-400"></i>
+                <h4 class="text-xs font-bold text-slate-200 uppercase tracking-wider">Inference Engine (${backendName})</h4>
+              </div>
+              <span class="px-2 py-0.5 rounded text-[10px] font-mono font-semibold ${inf.overloaded ? 'bg-rose-950 text-rose-300 border border-rose-500/30' : 'bg-emerald-950 text-emerald-300 border border-emerald-500/30'}">
+                ${inf.loaded_models_count || 0}/${inf.max_loaded_models || 1} Resident Model
+              </span>
+            </div>
+
+            <!-- Resident Models in VRAM -->
+            ${loadedModels.length > 0 ? `
+              <div class="space-y-2">
+                ${loadedModels.map(m => `
+                  <div class="p-3 rounded-lg bg-dark-900 border border-brand-500/30 flex items-center justify-between text-xs">
+                    <div>
+                      <div class="font-bold text-brand-300 font-mono text-sm">${escapeHtml(m.name || m.model)}</div>
+                      <div class="text-[11px] text-slate-400 font-mono mt-0.5 flex flex-wrap items-center gap-2">
+                        <span>Params: <strong class="text-slate-200">${m.parameter_size || '177B MoE'}</strong></span>
+                        <span>•</span>
+                        <span>Quant: <strong class="text-slate-200">${m.quantization_level || 'IQ4_XS'}</strong></span>
+                        <span>•</span>
+                        <span>Context: <strong class="text-slate-200">${(m.context_length || 262144).toLocaleString()} tok</strong></span>
+                        <span>•</span>
+                        <span>Resident VRAM: <strong class="text-indigo-300">${m.size_vram_gb || m.size_gb || 87.2} GB</strong></span>
+                      </div>
+                    </div>
+                    <span class="px-2 py-1 rounded bg-emerald-950 text-emerald-400 border border-emerald-500/30 text-[10px] font-mono font-bold uppercase">Resident</span>
+                  </div>
+                `).join('')}
               </div>
             ` : `
               <div class="py-3 px-3 rounded-lg bg-dark-900/60 border border-slate-800/60 text-center text-xs text-slate-500">
@@ -919,8 +1086,44 @@ function renderNodesGrid(nodes) {
               </div>
             `}
 
-            <!-- Available Cached Model Catalog -->
-            ${availableModels.length > 0 ? `
+            <!-- 4. PARALLEL INFERENCE SLOTS GRID (btop style) -->
+            ${slots.length > 0 ? `
+              <div class="pt-2 border-t border-slate-800/80 space-y-2">
+                <div class="flex justify-between items-center text-[11px] text-slate-400 font-mono">
+                  <span class="font-semibold uppercase tracking-wider">Parallel Execution Slots (${slots.length} Slots):</span>
+                  <span>Active: <strong class="text-amber-400">${slotSumm.active_slots || 0}</strong> | Idle: <strong class="text-emerald-400">${slotSumm.idle_slots || slots.length}</strong></span>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  ${slots.map(s => {
+                    const isProcessing = s.is_processing;
+                    const slotStateClass = isProcessing ? 'border-amber-500/50 bg-amber-950/20' : 'border-slate-800 bg-dark-900';
+                    const badgeClass = isProcessing ? 'bg-amber-950 text-amber-300 border-amber-500/30 animate-pulse' : 'bg-slate-800 text-slate-400';
+                    const promptProcessed = s.n_prompt_tokens_processed || 0;
+                    const promptCache = s.n_prompt_tokens_cache || 0;
+
+                    return `
+                      <div class="p-2.5 rounded-lg border ${slotStateClass} text-xs font-mono space-y-1.5">
+                        <div class="flex items-center justify-between">
+                          <span class="font-bold text-slate-200 text-[11px]">Slot #${s.id}</span>
+                          <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase ${badgeClass}">
+                            ${isProcessing ? 'PROCESSING' : 'IDLE'}
+                          </span>
+                        </div>
+                        <div class="text-[10px] text-slate-400 space-y-0.5">
+                          <div>Ctx: ${(s.n_ctx || 262144).toLocaleString()} | Task: <span class="text-slate-300">${s.id_task || 'None'}</span></div>
+                          <div>Tokens Processed: <span class="text-slate-200">${promptProcessed.toLocaleString()}</span> • Cache: <span class="text-emerald-400">${promptCache.toLocaleString()}</span></div>
+                          <div class="text-[9px] text-slate-500">Reasoning: ${s.params?.reasoning_format || 'deepseek'} • Temp: ${s.params?.temperature ? s.params.temperature.toFixed(2) : '0.10'}</div>
+                        </div>
+                      </div>
+                    `;
+                  }).join('')}
+                </div>
+              </div>
+            ` : ''}
+
+            <!-- Available Cached Models on Disk -->
+            ${availableModels.length > 0 && !slots.length ? `
               <div class="pt-2 border-t border-slate-800/60 text-xs">
                 <div class="text-[11px] text-slate-400 font-medium mb-1.5">Cached Models on Disk (${availableModels.length}):</div>
                 <div class="flex flex-wrap gap-1.5">
@@ -938,7 +1141,7 @@ function renderNodesGrid(nodes) {
         <!-- Node Card Footer / Controls -->
         <div class="pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs">
           <div class="text-slate-500 font-mono text-[11px]">
-            ${n.is_local ? 'Gateway Host' : 'Remote APU Worker (chunkito)'}
+            ${n.is_local ? 'Gateway Host (Beehive)' : 'Remote AMD APU Inference Worker (Chunkito)'}
           </div>
           <button onclick="refreshSingleNode('${n.node_id}')" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center space-x-1.5 transition">
             <i data-lucide="refresh-cw" class="w-3 h-3"></i>
@@ -985,8 +1188,8 @@ async function loadCron() {
     list.innerHTML = data.jobs.map(j => `
       <div class="p-4 rounded-lg bg-dark-950 border border-slate-800 flex justify-between items-center text-xs">
         <div>
-          <div class="font-bold text-slate-200">${j.name || j.job_id || j.file || 'Cron Job'}</div>
-          <div class="text-slate-400 font-mono mt-0.5">Schedule: ${j.schedule || 'Recurring'}</div>
+          <div class="font-bold text-slate-200">${escapeHtml(j.name || j.job_id || j.file || 'Cron Job')}</div>
+          <div class="text-slate-400 font-mono mt-0.5">Schedule: ${escapeHtml(j.schedule || 'Recurring')}</div>
         </div>
         <div class="text-right font-mono text-slate-400">
           <span class="px-2 py-0.5 rounded bg-slate-800 text-slate-300">${j.enabled ? 'ACTIVE' : 'READY'}</span>
@@ -999,52 +1202,116 @@ async function loadCron() {
 }
 
 // ----------------------------------------------------
-// TICKETS VIEW & WEBHOOK AUDIT LOG
+// TICKETS VIEW
 // ----------------------------------------------------
+let ticketSearchTimeout = null;
+function debounceLoadTickets() {
+  clearTimeout(ticketSearchTimeout);
+  ticketSearchTimeout = setTimeout(() => {
+    loadTicketsTab();
+  }, 300);
+}
+
 async function loadTickets() {
+  await loadTicketsTab();
   await loadWebhookEvents();
+}
+
+async function loadTicketsTab() {
+  const tbody = document.getElementById('ticketsTableBody');
+  const provider = document.getElementById('ticketFilterProvider').value;
+  const search = document.getElementById('ticketSearchInput').value;
+
+  const params = new URLSearchParams();
+  if (provider) params.append('provider', provider);
+  if (search) params.append('search', search);
+
+  try {
+    const res = await fetch(`/api/tickets?${params.toString()}`);
+    const data = await res.json();
+
+    document.getElementById('kpiTotalTickets').innerText = data.total_tickets || 0;
+    document.getElementById('kpiSyncedSessions').innerText = data.synced_sessions_count || 0;
+
+    const tickets = data.tickets || [];
+    if (tickets.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="7" class="text-center py-8 text-slate-500">No linked tickets found.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = tickets.map(t => {
+      const providerBadge = t.provider === 'github' ? '<span class="text-slate-200 bg-slate-800 px-2 py-0.5 rounded">GitHub</span>' :
+                            t.provider === 'linear' ? '<span class="text-indigo-300 bg-indigo-950 px-2 py-0.5 rounded">Linear</span>' :
+                            '<span class="text-sky-300 bg-sky-950 px-2 py-0.5 rounded">Jira</span>';
+
+      const sessionLinks = (t.linked_sessions || []).map(sid => `
+        <button onclick="openSessionTimeline('${sid}')" class="text-brand-400 hover:underline mr-1.5">${sid.substring(0, 10)}</button>
+      `).join('');
+
+      return `
+        <tr class="hover:bg-slate-800/30">
+          <td class="py-3 px-4">${providerBadge}</td>
+          <td class="py-3 px-4 font-bold text-white">${escapeHtml(t.ticket_key)}</td>
+          <td class="py-3 px-4 max-w-xs truncate">${t.url ? `<a href="${t.url}" target="_blank" class="hover:underline text-slate-200">${escapeHtml(t.title || t.ticket_key)}</a>` : escapeHtml(t.title || '-')}</td>
+          <td class="py-3 px-4"><span class="px-2 py-0.5 rounded text-[10px] uppercase font-bold bg-slate-800 text-slate-300">${escapeHtml(t.status || 'open')}</span></td>
+          <td class="py-3 px-4 text-slate-400">${escapeHtml(t.assignee || '-')}</td>
+          <td class="py-3 px-4">${sessionLinks || '<span class="text-slate-500">-</span>'}</td>
+          <td class="py-3 px-4 text-right">
+            <button onclick="syncTicketStatus('${t.provider}', '${t.ticket_key}')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs">Sync</button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="7" class="text-center py-8 text-rose-400">Failed to load tickets: ${err.message}</td></tr>`;
+  }
 }
 
 async function loadWebhookEvents() {
   const tbody = document.getElementById('webhookEventsBody');
-  if (!tbody) return;
-
   try {
     const res = await fetch('/api/webhooks/events?limit=20');
-    if (!res.ok) {
-      tbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-slate-500">No webhook receiver events logged yet.</td></tr>`;
-      return;
-    }
     const data = await res.json();
-    const events = data.events || [];
 
-    if (events.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-slate-500">No webhook receiver events logged yet.</td></tr>`;
+    document.getElementById('kpiTotalWebhooks').innerText = data.count || 0;
+
+    const events = data.events || [];
+    if (!events.length) {
+      tbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-slate-500">No webhook events logged yet.</td></tr>`;
       return;
     }
 
     tbody.innerHTML = events.map(e => `
-      <tr class="hover:bg-slate-800/30 transition">
-        <td class="py-2.5 px-4 text-slate-400">${new Date(e.created_at * 1000).toLocaleTimeString()}</td>
-        <td class="py-2.5 px-4 font-semibold text-brand-300 uppercase">${escapeHtml(e.provider)}</td>
-        <td class="py-2.5 px-4 text-slate-200">${escapeHtml(e.event_type)}</td>
-        <td class="py-2.5 px-4 text-emerald-400 font-bold">${escapeHtml(e.ticket_key || '-')}</td>
-        <td class="py-2.5 px-4 text-slate-400">${e.matched_sessions ? e.matched_sessions.length : 0} sessions</td>
-        <td class="py-2.5 px-4 text-slate-300">${escapeHtml(e.result || 'OK')}</td>
+      <tr class="hover:bg-slate-800/30">
+        <td class="py-2.5 px-4 text-slate-400">${new Date(e.received_at * 1000).toLocaleTimeString()}</td>
+        <td class="py-2.5 px-4 font-bold text-slate-200 uppercase">${escapeHtml(e.provider)}</td>
+        <td class="py-2.5 px-4 text-slate-300">${escapeHtml(e.event_type)}</td>
+        <td class="py-2.5 px-4 text-brand-300">${escapeHtml(e.ticket_key || '-')}</td>
+        <td class="py-2.5 px-4">${e.matched_sessions_count || 0} session(s)</td>
+        <td class="py-2.5 px-4"><span class="text-emerald-400">${escapeHtml(e.result || 'ok')}</span></td>
       </tr>
     `).join('');
   } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-slate-500">Webhook receiver ready (listening on /api/webhooks/*).</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-rose-400">Error loading webhooks: ${err.message}</td></tr>`;
   }
 }
 
-// Utilities
-function escapeHtml(text) {
-  if (!text) return '';
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+async function syncTicketStatus(provider, ticketKey) {
+  const newStatus = prompt(`Enter new status for ${ticketKey}:`, 'Done');
+  if (!newStatus) return;
+
+  try {
+    const res = await fetch(`/api/tickets/${provider}/${encodeURIComponent(ticketKey)}/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: newStatus })
+    });
+    const data = await res.json();
+    if (data.success) {
+      alert(`Updated ${ticketKey} to ${newStatus}`);
+      loadTicketsTab();
+    }
+  } catch (err) {
+    alert(`Sync failed: ${err.message}`);
+  }
 }

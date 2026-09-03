@@ -517,6 +517,117 @@ class TestHermesKarma(unittest.TestCase):
         self.assertEqual(refresh_single_res.status_code, 200)
         self.assertTrue(refresh_single_res.json()["success"])
 
+    def test_llama_server_inference_probing_and_slots(self):
+        collector = NodeTelemetryCollector()
+
+        async def mock_llama_server_query(host, port, timeout_sec=2.5):
+            return {
+                "reachable": True,
+                "backend_type": "llama.cpp (llama-server)",
+                "version": "llama-server (ROCm/Vulkan APU)",
+                "latency_ms": 1.2,
+                "loaded_models": [
+                    {
+                        "name": "qwen3.8-flash-next:262k",
+                        "model": "qwen3.8-flash-next:262k",
+                        "size_bytes": 93671559680,
+                        "size_gb": 87.24,
+                        "size_vram_gb": 87.24,
+                        "parameter_size": "176.9B",
+                        "quantization_level": "IQ4_XS - 4.25 bpw",
+                        "format": "gguf",
+                        "context_length": 262144,
+                        "embedding_dim": 2560,
+                        "family": "qwen",
+                        "status": "resident_in_vram",
+                    }
+                ],
+                "available_models": [
+                    {
+                        "name": "qwen3.8-flash-next:262k",
+                        "size_gb": 87.24,
+                        "parameter_size": "176.9B",
+                        "quantization": "IQ4_XS - 4.25 bpw",
+                        "context_length": 262144,
+                    }
+                ],
+                "slots": [
+                    {
+                        "id": 0,
+                        "n_ctx": 262144,
+                        "is_processing": True,
+                        "id_task": 31042,
+                        "n_prompt_tokens_processed": 1420,
+                        "n_prompt_tokens_cache": 500,
+                    },
+                    {
+                        "id": 1,
+                        "n_ctx": 262144,
+                        "is_processing": False,
+                        "id_task": 26429,
+                        "n_prompt_tokens_processed": 0,
+                        "n_prompt_tokens_cache": 0,
+                    }
+                ],
+                "slot_summary": {
+                    "total_slots": 2,
+                    "active_slots": 1,
+                    "idle_slots": 1,
+                    "total_prompt_tokens_processed": 1420,
+                    "total_prompt_tokens_cache": 500,
+                    "active_tasks": [31042],
+                },
+                "error": None,
+            }
+
+        collector._query_ollama_endpoint = mock_llama_server_query
+        chunkito_node = next(n for n in DEFAULT_NODES if n["id"] == "chunkito")
+        import asyncio
+        telemetry = asyncio.run(collector.collect_node_telemetry(chunkito_node))
+
+        self.assertEqual(telemetry["status"], "online")
+        self.assertEqual(telemetry["inference_engine"]["backend_type"], "llama.cpp (llama-server)")
+        self.assertEqual(telemetry["inference_engine"]["loaded_models_count"], 1)
+        self.assertEqual(telemetry["inference_engine"]["loaded_models"][0]["parameter_size"], "176.9B")
+        self.assertEqual(telemetry["inference_engine"]["slot_summary"]["active_slots"], 1)
+        self.assertEqual(telemetry["inference_engine"]["slot_summary"]["total_prompt_tokens_cache"], 500)
+        self.assertEqual(telemetry["apu_vram"]["used_gb"], 87.24)
+        self.assertAlmostEqual(telemetry["apu_vram"]["free_gb"], 118.0 - 87.24, places=1)
+
+    def test_local_btop_and_amdgpu_metrics(self):
+        collector = NodeTelemetryCollector()
+        amdgpu = collector._read_local_amdgpu()
+        self.assertIn("available", amdgpu)
+        self.assertIn("vram_total_gb", amdgpu)
+        self.assertIn("gpu_busy_percent", amdgpu)
+
+        net = collector._read_local_network()
+        self.assertIn("interfaces", net)
+
+        mem = collector._read_local_meminfo()
+        self.assertIn("cached_gb", mem)
+        self.assertIn("available_gb", mem)
+
+    def test_sessions_models_catalog_endpoint(self):
+        res = self.client.get("/api/sessions/models/catalog")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("models", data)
+        self.assertIsInstance(data["models"], list)
+        if data["models"]:
+            self.assertIn("name", data["models"][0])
+            self.assertIn("provider", data["models"][0])
+            self.assertIn("is_local", data["models"][0])
+
+    def test_analytics_multi_model_precision(self):
+        res = self.client.get("/api/analytics/overview")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("provider_distribution", data)
+        self.assertIn("local_zero_cost_ratio_pct", data)
+        self.assertIn("total_reasoning_tokens", data)
+        self.assertIn("total_api_calls", data)
+
 
 if __name__ == "__main__":
     unittest.main()
