@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from api.routes import sessions, analytics, skills, memory, live, tickets, cron, nodes
+from api.routes import sessions, analytics, skills, memory, live, tickets, cron, nodes, pantheon
 
 app = FastAPI(
     title="Hermes Karma",
@@ -26,6 +26,7 @@ app.add_middleware(
 # Register API routers
 app.include_router(sessions.router)
 app.include_router(analytics.router)
+app.include_router(pantheon.router)
 app.include_router(skills.router)
 app.include_router(memory.router)
 app.include_router(live.router)

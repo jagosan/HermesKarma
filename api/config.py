@@ -10,6 +10,7 @@ HERMES_USER_FILE = HERMES_DIR / "USER.md"
 HERMES_SKILLS_DIR = HERMES_DIR / "skills"
 HERMES_CRON_DIR = HERMES_DIR / "cron"
 HERMES_PLUGINS_DIR = HERMES_DIR / "plugins"
+HERMES_PROFILES_DIR = HERMES_DIR / "profiles"
 
 KARMA_DIR = Path(os.path.expanduser(os.getenv("HERMES_KARMA_HOME", "~/.hermes_karma")))
 KARMA_METADATA_DB = KARMA_DIR / "metadata.db"

@@ -637,6 +637,37 @@ class TestHermesKarma(unittest.TestCase):
             self.assertIn("model_distribution", data)
             self.assertIn("total_input_tokens", data)
 
+    def test_pantheon_profiles_endpoint(self):
+        res = self.client.get("/api/pantheon/profiles")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("summary", data)
+        self.assertIn("profiles", data)
+        self.assertGreaterEqual(data["summary"]["total_agents"], 8)
+        
+        profile_ids = [p["id"] for p in data["profiles"]]
+        for required_id in ["owl", "rabbit", "tigger", "piglet", "eeyore", "pooh", "coder", "ingest"]:
+            self.assertIn(required_id, profile_ids)
+            
+        owl = next(p for p in data["profiles"] if p["id"] == "owl")
+        self.assertEqual(owl["emoji"], "🦉")
+        self.assertEqual(owl["name"], "Owl")
+        self.assertIn("model", owl)
+
+    def test_pantheon_profile_detail_endpoint(self):
+        res = self.client.get("/api/pantheon/profiles/owl")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["id"], "owl")
+        self.assertIn("soul_raw", data)
+        self.assertIn("skills", data)
+        self.assertIn("sessions", data)
+        self.assertTrue(len(data["soul_raw"]) > 0)
+        
+        # Test 404 for unknown profile
+        res_404 = self.client.get("/api/pantheon/profiles/nonexistent_agent_xyz")
+        self.assertEqual(res_404.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()
