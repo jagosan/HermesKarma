@@ -239,6 +239,23 @@
 
       <!-- TAB: ANALYTICS -->
       <section id="view-analytics" class="view-panel space-y-6 hidden">
+        <!-- Analytics Header & Time Range Filter -->
+        <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-4 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <h2 class="text-base font-bold text-white flex items-center space-x-2">
+              <i data-lucide="bar-chart-3" class="w-5 h-5 text-brand-400"></i>
+              <span>Tokens & Cost Analytics</span>
+            </h2>
+            <p class="text-xs text-slate-400">Aggregated inference telemetry across local APU nodes and frontier APIs</p>
+          </div>
+          <div class="flex items-center space-x-1.5 bg-dark-950 p-1 rounded-lg border border-slate-800 text-xs">
+            <button onclick="setAnalyticsTimeRange('today')" class="time-range-btn px-3 py-1 rounded font-medium transition text-slate-400 hover:text-white" data-range="today">Today (24h)</button>
+            <button onclick="setAnalyticsTimeRange('7d')" class="time-range-btn px-3 py-1 rounded font-medium transition text-slate-400 hover:text-white" data-range="7d">Past 7 Days</button>
+            <button onclick="setAnalyticsTimeRange('30d')" class="time-range-btn px-3 py-1 rounded font-medium transition text-slate-400 hover:text-white" data-range="30d">Past 30 Days</button>
+            <button onclick="setAnalyticsTimeRange('all')" class="time-range-btn px-3 py-1 rounded font-medium transition bg-brand-500/20 text-brand-300 border border-brand-500/30" data-range="all">All Time</button>
+          </div>
+        </div>
+
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <!-- Card 1 -->
           <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm">
