@@ -17,6 +17,25 @@ import httpx
 from api.config import DEFAULT_NODES
 
 
+def _safe_read_int(path: str, default: int = 0) -> int:
+    """Safely read an integer from a sysfs/procfs file without descriptor leaks."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            val = f.read().strip()
+            return int(val) if val else default
+    except Exception:
+        return default
+
+
+def _safe_read_str(path: str, default: str = "") -> str:
+    """Safely read a string from a sysfs/procfs file without descriptor leaks."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip() or default
+    except Exception:
+        return default
+
+
 class NodeTelemetryCollector:
     """Collects CPU, RAM, AMD APU VRAM, btop/amdgpu_top metrics, and LLM inference telemetry."""
 
@@ -108,11 +127,13 @@ class NodeTelemetryCollector:
             for hw in glob.glob("/sys/class/hwmon/hwmon*"):
                 name_path = os.path.join(hw, "name")
                 if os.path.exists(name_path):
-                    hw_name = open(name_path).read().strip()
+                    hw_name = _safe_read_str(name_path)
                     if hw_name in ["k10temp", "coretemp", "zenpower", "cpu_thermal"]:
                         for tf in glob.glob(os.path.join(hw, "temp*_input")):
-                            cpu_temp = round(int(open(tf).read().strip()) / 1000.0, 1)
-                            break
+                            raw_t = _safe_read_int(tf)
+                            if raw_t > 0:
+                                cpu_temp = round(raw_t / 1000.0, 1)
+                                break
                 if cpu_temp is not None:
                     break
         except Exception:
@@ -126,7 +147,7 @@ class NodeTelemetryCollector:
             # Read CPU model name if available
             model_name = "AMD Processor"
             try:
-                with open("/proc/cpuinfo", "r") as f:
+                with open("/proc/cpuinfo", "r", encoding="utf-8") as f:
                     for line in f:
                         if "model name" in line:
                             model_name = line.split(":", 1)[1].strip()
@@ -179,8 +200,12 @@ class NodeTelemetryCollector:
         }
 
         try:
-            # Check /sys/class/drm/card*/device for amdgpu
-            for dev_path in glob.glob("/sys/class/drm/card*/device"):
+            # Check /sys/class/drm/card[0-9]*/device for primary GPU/APU
+            for card_dir in sorted(glob.glob("/sys/class/drm/card[0-9]*")):
+                # Exclude connector subdirectories like card1-DP-1
+                if "-" in os.path.basename(card_dir):
+                    continue
+                dev_path = os.path.join(card_dir, "device")
                 vram_total_f = os.path.join(dev_path, "mem_info_vram_total")
                 if os.path.exists(vram_total_f):
                     res["available"] = True
@@ -189,15 +214,15 @@ class NodeTelemetryCollector:
                     # Busy %
                     gpu_busy_f = os.path.join(dev_path, "gpu_busy_percent")
                     if os.path.exists(gpu_busy_f):
-                        res["gpu_busy_percent"] = int(open(gpu_busy_f).read().strip() or 0)
+                        res["gpu_busy_percent"] = _safe_read_int(gpu_busy_f)
                     mem_busy_f = os.path.join(dev_path, "mem_busy_percent")
                     if os.path.exists(mem_busy_f):
-                        res["mem_busy_percent"] = int(open(mem_busy_f).read().strip() or 0)
+                        res["mem_busy_percent"] = _safe_read_int(mem_busy_f)
 
                     # VRAM
-                    vram_tot = int(open(vram_total_f).read().strip() or 0)
+                    vram_tot = _safe_read_int(vram_total_f)
                     vram_used_f = os.path.join(dev_path, "mem_info_vram_used")
-                    vram_used = int(open(vram_used_f).read().strip() or 0) if os.path.exists(vram_used_f) else 0
+                    vram_used = _safe_read_int(vram_used_f) if os.path.exists(vram_used_f) else 0
 
                     res["vram_total_bytes"] = vram_tot
                     res["vram_used_bytes"] = vram_used
@@ -210,8 +235,8 @@ class NodeTelemetryCollector:
                     gtt_total_f = os.path.join(dev_path, "mem_info_gtt_total")
                     gtt_used_f = os.path.join(dev_path, "mem_info_gtt_used")
                     if os.path.exists(gtt_total_f):
-                        gtt_tot = int(open(gtt_total_f).read().strip() or 0)
-                        gtt_used = int(open(gtt_used_f).read().strip() or 0) if os.path.exists(gtt_used_f) else 0
+                        gtt_tot = _safe_read_int(gtt_total_f)
+                        gtt_used = _safe_read_int(gtt_used_f) if os.path.exists(gtt_used_f) else 0
                         res["gtt_total_bytes"] = gtt_tot
                         res["gtt_used_bytes"] = gtt_used
                         res["gtt_total_gb"] = round(gtt_tot / (1024**3), 2)
@@ -226,15 +251,15 @@ class NodeTelemetryCollector:
                             # Temperature
                             temp_f = os.path.join(hw, "temp1_input")
                             if os.path.exists(temp_f):
-                                res["temperature_c"] = round(int(open(temp_f).read().strip()) / 1000.0, 1)
+                                res["temperature_c"] = round(_safe_read_int(temp_f) / 1000.0, 1)
                             # Power
-                            power_f = os.path.join(hw, "power1_input") or os.path.join(hw, "power1_average")
+                            power_f = os.path.join(hw, "power1_input") if os.path.exists(os.path.join(hw, "power1_input")) else os.path.join(hw, "power1_average")
                             if os.path.exists(power_f):
-                                res["power_w"] = round(int(open(power_f).read().strip()) / 1000000.0, 1)
+                                res["power_w"] = round(_safe_read_int(power_f) / 1000000.0, 1)
                             # Fan
                             fan_f = os.path.join(hw, "fan1_input")
                             if os.path.exists(fan_f):
-                                res["fan_rpm"] = int(open(fan_f).read().strip())
+                                res["fan_rpm"] = _safe_read_int(fan_f)
                     break
         except Exception:
             pass
