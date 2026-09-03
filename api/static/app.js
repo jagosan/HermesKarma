@@ -50,6 +50,7 @@ function switchTab(tabId) {
 
   if (tabId === 'sessions') loadSessions();
   else if (tabId === 'analytics') loadAnalytics();
+  else if (tabId === 'pantheon') loadPantheon();
   else if (tabId === 'skills') loadSkills();
   else if (tabId === 'memory') loadMemory();
   else if (tabId === 'live') loadLiveSessions();
@@ -621,6 +622,214 @@ function renderAnalyticsCharts(data) {
     }
   });
 }
+
+// ----------------------------------------------------
+// PANTHEON SWARM VIEW
+// ----------------------------------------------------
+let currentPantheonProfiles = [];
+let activePantheonAgent = null;
+
+async function loadPantheon() {
+  try {
+    const res = await fetch('/api/pantheon/profiles');
+    const data = await res.json();
+    currentPantheonProfiles = data.profiles || [];
+    const summ = data.summary || {};
+
+    const kpiAgents = document.getElementById('pantheonKpiAgents');
+    if (kpiAgents) kpiAgents.innerText = `${summ.total_agents || 8} Agents`;
+
+    const kpiLocal = document.getElementById('pantheonKpiLocal');
+    if (kpiLocal) kpiLocal.innerText = `${summ.local_agents || 7} APU/Local • ${summ.cloud_agents || 1} Cloud`;
+
+    const kpiSessions = document.getElementById('pantheonKpiSessions');
+    if (kpiSessions) kpiSessions.innerText = `${(summ.total_sessions || 0).toLocaleString()} Sessions`;
+
+    const kpiTokens = document.getElementById('pantheonKpiTokens');
+    if (kpiTokens) kpiTokens.innerText = (summ.total_tokens || 0).toLocaleString();
+
+    const kpiTokensSub = document.getElementById('pantheonKpiTokensSub');
+    if (kpiTokensSub) kpiTokensSub.innerText = `In: ${(summ.total_input_tokens || 0).toLocaleString()} | Out: ${(summ.total_output_tokens || 0).toLocaleString()}`;
+
+    const kpiSkills = document.getElementById('pantheonKpiSkills');
+    if (kpiSkills) kpiSkills.innerText = `${(summ.total_skills || 0).toLocaleString()} Skills`;
+
+    const grid = document.getElementById('pantheonGrid');
+    if (!grid) return;
+
+    if (currentPantheonProfiles.length === 0) {
+      grid.innerHTML = `<div class="col-span-full text-center py-12 text-slate-500">No agent profiles found in ~/.hermes/profiles/</div>`;
+      return;
+    }
+
+    grid.innerHTML = currentPantheonProfiles.map(p => {
+      const isLocal = p.is_local;
+      const modelTag = isLocal ? 
+        '<span class="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-500/30 text-[10px] font-mono font-semibold">⚡ APU / Local</span>' : 
+        '<span class="px-1.5 py-0.5 rounded bg-brand-950 text-brand-300 border border-brand-500/30 text-[10px] font-mono font-semibold">☁️ Frontier Cloud</span>';
+
+      return `
+        <div class="bg-dark-900 border border-slate-800/80 hover:border-brand-500/50 rounded-xl p-5 shadow-sm space-y-4 flex flex-col justify-between transition group">
+          <div class="space-y-3.5">
+            <div class="flex items-start justify-between">
+              <div class="flex items-center space-x-3">
+                <span class="text-3xl p-2 rounded-xl bg-dark-950 border border-slate-800 group-hover:scale-105 transition">${p.emoji || '🤖'}</span>
+                <div>
+                  <h3 class="text-base font-bold text-white tracking-tight">${escapeHtml(p.name)}</h3>
+                  <span class="text-[11px] font-mono text-brand-300 font-medium">${escapeHtml(p.role)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="p-2.5 rounded-lg bg-dark-950 border border-slate-800/80 space-y-1">
+              <div class="flex items-center justify-between text-[11px] font-mono">
+                <span class="text-slate-400">Model & Target:</span>
+                ${modelTag}
+              </div>
+              <div class="text-xs font-mono font-bold text-slate-200 truncate" title="${escapeHtml(p.model)}">
+                ${escapeHtml(p.model)}
+              </div>
+            </div>
+
+            <p class="text-xs text-slate-400 line-clamp-3 leading-relaxed">
+              ${escapeHtml(p.personality_summary || p.description || p.domain)}
+            </p>
+
+            <div class="grid grid-cols-2 gap-2 pt-2 border-t border-slate-800/60 font-mono text-[11px]">
+              <div class="p-2 rounded bg-dark-950/60 border border-slate-800/60">
+                <div class="text-slate-500 text-[10px]">Sessions</div>
+                <div class="text-white font-bold">${(p.total_sessions || 0).toLocaleString()}</div>
+              </div>
+              <div class="p-2 rounded bg-dark-950/60 border border-slate-800/60">
+                <div class="text-slate-500 text-[10px]">Tokens</div>
+                <div class="text-indigo-300 font-bold">${(p.total_tokens || 0).toLocaleString()}</div>
+              </div>
+              <div class="p-2 rounded bg-dark-950/60 border border-slate-800/60">
+                <div class="text-slate-500 text-[10px]">Skills</div>
+                <div class="text-purple-300 font-bold">${p.skills_count || 0}</div>
+              </div>
+              <div class="p-2 rounded bg-dark-950/60 border border-slate-800/60">
+                <div class="text-slate-500 text-[10px]">Memory</div>
+                <div class="text-emerald-400 font-bold">${p.memory_chars > 0 ? `${p.memory_chars} c` : 'Ready'}</div>
+              </div>
+            </div>
+          </div>
+
+          <button onclick="openPantheonDrawer('${p.id}')" class="w-full py-2 px-3 rounded-lg bg-slate-800 hover:bg-brand-600/30 hover:text-brand-300 border border-slate-700 hover:border-brand-500/50 text-slate-200 text-xs font-medium flex items-center justify-center space-x-2 transition">
+            <i data-lucide="eye" class="w-3.5 h-3.5"></i>
+            <span>Deep Dive Profile</span>
+          </button>
+        </div>
+      `;
+    }).join('');
+
+    lucide.createIcons();
+  } catch (err) {
+    console.error('Failed to load Pantheon profiles:', err);
+  }
+}
+window.loadPantheon = loadPantheon;
+
+async function openPantheonDrawer(profileId) {
+  try {
+    const res = await fetch(`/api/pantheon/profiles/${profileId}`);
+    const p = await res.json();
+    activePantheonAgent = p;
+
+    document.getElementById('drawerAvatar').innerText = p.emoji || '🤖';
+    document.getElementById('drawerName').innerText = `${p.name} (${p.id})`;
+    document.getElementById('drawerRoleBadge').innerText = p.role;
+    document.getElementById('drawerDomain').innerText = p.domain;
+
+    const localBadge = document.getElementById('drawerLocalBadge');
+    if (localBadge) {
+      localBadge.innerText = p.is_local ? '⚡ APU / Local' : '☁️ Frontier Cloud';
+      localBadge.className = p.is_local ? 
+        'px-2 py-0.5 rounded text-xs font-mono font-semibold bg-emerald-950 text-emerald-300 border border-emerald-500/30' : 
+        'px-2 py-0.5 rounded text-xs font-mono font-semibold bg-brand-950 text-brand-300 border border-brand-500/30';
+    }
+
+    document.getElementById('drawerSoulChars').innerText = `${(p.soul_raw || '').length.toLocaleString()} characters`;
+    document.getElementById('drawerSoulRaw').innerText = p.soul_raw || 'No SOUL.md system prompt defined for this agent profile.';
+
+    const sessCount = document.getElementById('drawerSessionsCount');
+    if (sessCount) sessCount.innerText = `${(p.sessions || []).length} recorded sessions`;
+    const sessTbody = document.getElementById('drawerSessionsTableBody');
+    if (sessTbody) {
+      if (!p.sessions || p.sessions.length === 0) {
+        sessTbody.innerHTML = `<tr><td colspan="6" class="py-6 text-center text-slate-500">No sessions executed in ~/.hermes/profiles/${p.id}/state.db yet</td></tr>`;
+      } else {
+        sessTbody.innerHTML = p.sessions.map(s => {
+          const dateStr = s.started_at ? new Date(s.started_at * 1000).toLocaleString() : 'N/A';
+          const tok = (s.input_tokens || 0) + (s.output_tokens || 0);
+          return `
+            <tr class="hover:bg-slate-800/40">
+              <td class="py-2.5 px-3 text-brand-400 font-semibold">${escapeHtml(s.id)}</td>
+              <td class="py-2.5 px-3 text-slate-200 font-medium">${escapeHtml(s.title || 'Untitled Session')}</td>
+              <td class="py-2.5 px-3 text-slate-400">${escapeHtml(s.model || p.model)}</td>
+              <td class="py-2.5 px-3 text-slate-400">${s.message_count || 0}</td>
+              <td class="py-2.5 px-3 text-indigo-300">${tok.toLocaleString()}</td>
+              <td class="py-2.5 px-3 text-slate-500 text-[11px]">${dateStr}</td>
+            </tr>
+          `;
+        }).join('');
+      }
+    }
+
+    const skillsCount = document.getElementById('drawerSkillsCount');
+    if (skillsCount) skillsCount.innerText = `${(p.skills || []).length} specialized skills`;
+    const skillsGrid = document.getElementById('drawerSkillsGrid');
+    if (skillsGrid) {
+      if (!p.skills || p.skills.length === 0) {
+        skillsGrid.innerHTML = `<div class="col-span-full py-6 text-center text-slate-500">Inherits all core skills from ~/.hermes/skills/</div>`;
+      } else {
+        skillsGrid.innerHTML = p.skills.slice(0, 30).map(sk => `
+          <div class="p-3 rounded-lg bg-dark-950 border border-slate-800 space-y-1">
+            <div class="flex items-center justify-between">
+              <span class="font-bold text-white font-mono text-xs">${escapeHtml(sk.name)}</span>
+              <span class="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-[10px] font-mono text-slate-400">${escapeHtml(sk.category)}</span>
+            </div>
+            <p class="text-[11px] text-slate-400 line-clamp-2">${escapeHtml(sk.description || 'Procedural skill playbook')}</p>
+          </div>
+        `).join('');
+      }
+    }
+
+    document.getElementById('drawerMemoryRaw').innerText = p.memory_raw || 'No profile-specific MEMORY.md saved yet. Agent uses global memory.';
+    document.getElementById('drawerUserRaw').innerText = p.user_raw || 'No profile-specific USER.md saved yet. Agent uses global user profile.';
+
+    document.getElementById('drawerConfigRaw').innerText = p.config_raw || JSON.stringify(p.config || {}, null, 2);
+
+    switchDrawerTab('soul');
+    document.getElementById('pantheonDetailDrawer').classList.remove('hidden');
+    lucide.createIcons();
+  } catch (err) {
+    console.error('Failed to open Pantheon drawer:', err);
+  }
+}
+window.openPantheonDrawer = openPantheonDrawer;
+
+function closePantheonDrawer() {
+  const drawer = document.getElementById('pantheonDetailDrawer');
+  if (drawer) drawer.classList.add('hidden');
+}
+window.closePantheonDrawer = closePantheonDrawer;
+
+function switchDrawerTab(tabName) {
+  const tabs = ['soul', 'sessions', 'skills', 'memory', 'config'];
+  tabs.forEach(t => {
+    const btn = document.getElementById(`drawer-tab-${t}`);
+    const content = document.getElementById(`drawer-content-${t}`);
+    if (t === tabName) {
+      if (btn) btn.className = 'py-3 text-brand-400 border-b-2 border-brand-500 font-semibold';
+      if (content) content.classList.remove('hidden');
+    } else {
+      if (btn) btn.className = 'py-3 text-slate-400 hover:text-slate-200';
+      if (content) content.classList.add('hidden');
+    }
+  });
+}
+window.switchDrawerTab = switchDrawerTab;
 
 // ----------------------------------------------------
 // SKILLS VIEW

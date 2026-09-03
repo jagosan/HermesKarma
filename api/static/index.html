@@ -91,6 +91,11 @@
           <span>Tokens & Costs</span>
         </button>
 
+        <button onclick="switchTab('pantheon')" id="tab-pantheon" class="tab-btn w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/50">
+          <i data-lucide="users" class="w-4 h-4"></i>
+          <span>Pantheon Swarm</span>
+        </button>
+
         <button onclick="switchTab('skills')" id="tab-skills" class="tab-btn w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/50">
           <i data-lucide="sparkles" class="w-4 h-4"></i>
           <span>Skills Evolution</span>
@@ -355,6 +360,185 @@
               <tbody id="modelsTableBody" class="divide-y divide-slate-800/60 font-mono text-slate-300">
               </tbody>
             </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: PANTHEON SWARM -->
+      <section id="view-pantheon" class="view-panel space-y-6 hidden">
+        <!-- Swarm Header & KPI Summary -->
+        <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm space-y-4">
+          <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <div class="flex items-center space-x-2.5">
+                <span class="text-2xl">🌲</span>
+                <h2 class="text-base font-bold text-white tracking-tight">Hundred Acre Wood Pantheon Swarm</h2>
+                <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-brand-950 text-brand-300 border border-brand-500/30">
+                  8 Autonomous Specialists
+                </span>
+              </div>
+              <p class="text-xs text-slate-400 mt-1">
+                Role-specialized agent profiles with dedicated models, system directives, memory, and specialized skill portfolios in <code class="text-brand-300">~/.hermes/profiles/</code>
+              </p>
+            </div>
+            <div class="flex items-center space-x-2">
+              <button onclick="loadPantheon()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center space-x-1.5 transition">
+                <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+                <span>Refresh Swarm</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Swarm KPI Cards -->
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 border-t border-slate-800/80">
+            <div class="p-3 rounded-lg bg-dark-950 border border-slate-800/80">
+              <div class="text-slate-400 text-xs flex items-center space-x-1.5">
+                <i data-lucide="users" class="w-3.5 h-3.5 text-brand-400"></i>
+                <span>Active Specialists</span>
+              </div>
+              <div id="pantheonKpiAgents" class="text-xl font-bold text-white mt-1">8 Agents</div>
+              <div id="pantheonKpiLocal" class="text-[11px] text-emerald-400 mt-0.5 font-mono">7 APU/Local • 1 Cloud</div>
+            </div>
+
+            <div class="p-3 rounded-lg bg-dark-950 border border-slate-800/80">
+              <div class="text-slate-400 text-xs flex items-center space-x-1.5">
+                <i data-lucide="message-square" class="w-3.5 h-3.5 text-indigo-400"></i>
+                <span>Total Swarm Sessions</span>
+              </div>
+              <div id="pantheonKpiSessions" class="text-xl font-bold text-white mt-1">0 Sessions</div>
+              <div id="pantheonKpiSessionsSub" class="text-[11px] text-slate-400 mt-0.5 font-mono">Across all profiles</div>
+            </div>
+
+            <div class="p-3 rounded-lg bg-dark-950 border border-slate-800/80">
+              <div class="text-slate-400 text-xs flex items-center space-x-1.5">
+                <i data-lucide="cpu" class="w-3.5 h-3.5 text-emerald-400"></i>
+                <span>Tokens Processed</span>
+              </div>
+              <div id="pantheonKpiTokens" class="text-xl font-bold text-emerald-400 mt-1">0</div>
+              <div id="pantheonKpiTokensSub" class="text-[11px] text-slate-400 mt-0.5 font-mono">In: 0 | Out: 0</div>
+            </div>
+
+            <div class="p-3 rounded-lg bg-dark-950 border border-slate-800/80">
+              <div class="text-slate-400 text-xs flex items-center space-x-1.5">
+                <i data-lucide="sparkles" class="w-3.5 h-3.5 text-purple-400"></i>
+                <span>Specialized Skills</span>
+              </div>
+              <div id="pantheonKpiSkills" class="text-xl font-bold text-purple-300 mt-1">0 Skills</div>
+              <div class="text-[11px] text-slate-400 mt-0.5 font-mono">Profile skill trees</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Agent Profiles Cards Grid -->
+        <div id="pantheonGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div class="col-span-full py-12 text-center text-slate-500">Loading Pantheon Swarm agents...</div>
+        </div>
+
+        <!-- Selected Agent Deep Dive Detail Panel (Modal / Drawer) -->
+        <div id="pantheonDetailDrawer" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div class="bg-dark-900 border border-slate-800 rounded-2xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+            <!-- Drawer Header -->
+            <div class="p-5 border-b border-slate-800 bg-dark-950 flex items-start justify-between">
+              <div class="flex items-center space-x-3.5">
+                <span id="drawerAvatar" class="text-3xl p-2 rounded-xl bg-dark-900 border border-slate-800">🤖</span>
+                <div>
+                  <div class="flex items-center space-x-2">
+                    <h3 id="drawerName" class="text-lg font-bold text-white tracking-tight">Agent</h3>
+                    <span id="drawerRoleBadge" class="px-2 py-0.5 rounded text-xs font-mono uppercase font-semibold bg-brand-950 text-brand-300 border border-brand-500/30">Role</span>
+                    <span id="drawerLocalBadge" class="px-2 py-0.5 rounded text-xs font-mono font-semibold bg-emerald-950 text-emerald-300 border border-emerald-500/30">⚡ Local</span>
+                  </div>
+                  <div id="drawerDomain" class="text-xs text-slate-400 font-mono mt-0.5">Specialization domain</div>
+                </div>
+              </div>
+              <button onclick="closePantheonDrawer()" class="p-2 rounded-lg bg-dark-900 hover:bg-slate-800 text-slate-400 hover:text-white transition">
+                <i data-lucide="x" class="w-5 h-5"></i>
+              </button>
+            </div>
+
+            <!-- Drawer Sub-Navigation Tabs -->
+            <div class="px-5 border-b border-slate-800 bg-dark-950/50 flex space-x-4 text-xs font-medium">
+              <button onclick="switchDrawerTab('soul')" id="drawer-tab-soul" class="py-3 text-brand-400 border-b-2 border-brand-500 font-semibold">
+                📜 Soul & Directives
+              </button>
+              <button onclick="switchDrawerTab('sessions')" id="drawer-tab-sessions" class="py-3 text-slate-400 hover:text-slate-200">
+                💬 Sessions & Tasks
+              </button>
+              <button onclick="switchDrawerTab('skills')" id="drawer-tab-skills" class="py-3 text-slate-400 hover:text-slate-200">
+                ⚡ Skills & Capabilities
+              </button>
+              <button onclick="switchDrawerTab('memory')" id="drawer-tab-memory" class="py-3 text-slate-400 hover:text-slate-200">
+                🧠 Memory & Context
+              </button>
+              <button onclick="switchDrawerTab('config')" id="drawer-tab-config" class="py-3 text-slate-400 hover:text-slate-200">
+                ⚙️ Config & Inference
+              </button>
+            </div>
+
+            <!-- Drawer Content Body -->
+            <div class="p-6 overflow-y-auto flex-1 space-y-4">
+              <!-- Tab 1: Soul -->
+              <div id="drawer-content-soul" class="space-y-3">
+                <div class="flex items-center justify-between">
+                  <h4 class="text-xs font-bold text-slate-300 uppercase tracking-wider">SOUL.md Persona & System Directives</h4>
+                  <span id="drawerSoulChars" class="text-[11px] font-mono text-slate-500">0 characters</span>
+                </div>
+                <div id="drawerSoulRaw" class="p-4 rounded-xl bg-dark-950 border border-slate-800 text-xs font-mono text-slate-300 whitespace-pre-wrap leading-relaxed max-h-[500px] overflow-y-auto"></div>
+              </div>
+
+              <!-- Tab 2: Sessions -->
+              <div id="drawer-content-sessions" class="hidden space-y-3">
+                <div class="flex items-center justify-between">
+                  <h4 class="text-xs font-bold text-slate-300 uppercase tracking-wider">Executed Sessions & Task History</h4>
+                  <span id="drawerSessionsCount" class="text-[11px] font-mono text-slate-500">0 sessions</span>
+                </div>
+                <div class="overflow-x-auto">
+                  <table class="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr class="border-b border-slate-800 text-slate-400 uppercase bg-dark-950/60 font-mono text-[11px]">
+                        <th class="py-2.5 px-3">Session ID</th>
+                        <th class="py-2.5 px-3">Title / Task</th>
+                        <th class="py-2.5 px-3">Model</th>
+                        <th class="py-2.5 px-3">Turns</th>
+                        <th class="py-2.5 px-3">Tokens</th>
+                        <th class="py-2.5 px-3">Date</th>
+                      </tr>
+                    </thead>
+                    <tbody id="drawerSessionsTableBody" class="divide-y divide-slate-800/60 font-mono text-slate-300 text-xs">
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- Tab 3: Skills -->
+              <div id="drawer-content-skills" class="hidden space-y-3">
+                <div class="flex items-center justify-between">
+                  <h4 class="text-xs font-bold text-slate-300 uppercase tracking-wider">Assigned & Specialized Skills</h4>
+                  <span id="drawerSkillsCount" class="text-[11px] font-mono text-slate-500">0 skills</span>
+                </div>
+                <div id="drawerSkillsGrid" class="grid grid-cols-1 sm:grid-cols-2 gap-3"></div>
+              </div>
+
+              <!-- Tab 4: Memory -->
+              <div id="drawer-content-memory" class="hidden space-y-4">
+                <div class="space-y-2">
+                  <h4 class="text-xs font-bold text-slate-300 uppercase tracking-wider">Profile MEMORY.md</h4>
+                  <div id="drawerMemoryRaw" class="p-4 rounded-xl bg-dark-950 border border-slate-800 text-xs font-mono text-slate-300 whitespace-pre-wrap leading-relaxed max-h-[220px] overflow-y-auto"></div>
+                </div>
+                <div class="space-y-2">
+                  <h4 class="text-xs font-bold text-slate-300 uppercase tracking-wider">Profile USER.md</h4>
+                  <div id="drawerUserRaw" class="p-4 rounded-xl bg-dark-950 border border-slate-800 text-xs font-mono text-slate-300 whitespace-pre-wrap leading-relaxed max-h-[220px] overflow-y-auto"></div>
+                </div>
+              </div>
+
+              <!-- Tab 5: Config -->
+              <div id="drawer-content-config" class="hidden space-y-3">
+                <div class="flex items-center justify-between">
+                  <h4 class="text-xs font-bold text-slate-300 uppercase tracking-wider">config.yaml & Inference Specification</h4>
+                  <span class="text-[11px] font-mono text-slate-500">~/.hermes/profiles/{id}/config.yaml</span>
+                </div>
+                <div id="drawerConfigRaw" class="p-4 rounded-xl bg-dark-950 border border-slate-800 text-xs font-mono text-slate-300 whitespace-pre-wrap leading-relaxed max-h-[500px] overflow-y-auto"></div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
