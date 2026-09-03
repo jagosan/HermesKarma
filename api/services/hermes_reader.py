@@ -446,11 +446,12 @@ class HermesReader:
                 delegations.append(d)
             return delegations
 
-    def get_analytics_overview(self) -> Dict[str, Any]:
+    def get_analytics_overview(self, time_range: str = "all") -> Dict[str, Any]:
         """Aggregate total tokens, costs, models, and tools with full multi-model and local vs cloud precision."""
         conn = self._get_ro_conn()
         if not conn:
             return {
+                "time_range": time_range,
                 "total_sessions": 0,
                 "total_messages": 0,
                 "total_input_tokens": 0,
@@ -473,43 +474,43 @@ class HermesReader:
                 "daily_activity": [],
             }
 
+        import time
+        now_ts = time.time()
+        cutoff_ts = None
+        if time_range in ("today", "24h", "1d"):
+            cutoff_ts = now_ts - 86400
+        elif time_range in ("7d", "7days", "week"):
+            cutoff_ts = now_ts - (7 * 86400)
+        elif time_range in ("30d", "30days", "month"):
+            cutoff_ts = now_ts - (30 * 86400)
+
         with conn:
             cur = conn.cursor()
 
             # 1. Total sessions and message counts from sessions table
-            cur.execute("""
-                SELECT 
-                    COUNT(*) as total_sessions,
-                    SUM(message_count) as total_messages
-                FROM sessions
-            """)
+            if cutoff_ts is not None:
+                cur.execute("""
+                    SELECT 
+                        COUNT(*) as total_sessions,
+                        SUM(message_count) as total_messages
+                    FROM sessions
+                    WHERE started_at >= ?
+                """, (cutoff_ts,))
+            else:
+                cur.execute("""
+                    SELECT 
+                        COUNT(*) as total_sessions,
+                        SUM(message_count) as total_messages
+                    FROM sessions
+                """)
             sess_summary = dict(cur.fetchone() or {})
 
             # 2. Comprehensive Model usage breakdown from session_model_usage
-            cur.execute("""
-                SELECT 
-                    COALESCE(model, 'Unknown') as model,
-                    COUNT(DISTINCT session_id) as session_count,
-                    SUM(api_call_count) as api_call_count,
-                    SUM(input_tokens) as input_tokens,
-                    SUM(output_tokens) as output_tokens,
-                    SUM(cache_read_tokens) as cache_read_tokens,
-                    SUM(cache_write_tokens) as cache_write_tokens,
-                    SUM(reasoning_tokens) as reasoning_tokens,
-                    SUM(estimated_cost_usd) as cost_usd,
-                    COALESCE(billing_provider, '') as billing_provider
-                FROM session_model_usage
-                GROUP BY model
-                ORDER BY (SUM(input_tokens) + SUM(output_tokens)) DESC
-            """)
-            model_rows = [dict(r) for r in cur.fetchall()]
-
-            # Fallback to sessions table if session_model_usage was empty
-            if not model_rows:
+            if cutoff_ts is not None:
                 cur.execute("""
                     SELECT 
                         COALESCE(model, 'Unknown') as model,
-                        COUNT(*) as session_count,
+                        COUNT(DISTINCT session_id) as session_count,
                         SUM(api_call_count) as api_call_count,
                         SUM(input_tokens) as input_tokens,
                         SUM(output_tokens) as output_tokens,
@@ -518,10 +519,67 @@ class HermesReader:
                         SUM(reasoning_tokens) as reasoning_tokens,
                         SUM(estimated_cost_usd) as cost_usd,
                         COALESCE(billing_provider, '') as billing_provider
-                    FROM sessions
+                    FROM session_model_usage
+                    WHERE (last_seen >= ? OR first_seen >= ?)
+                    GROUP BY model
+                    ORDER BY (SUM(input_tokens) + SUM(output_tokens)) DESC
+                """, (cutoff_ts, cutoff_ts))
+            else:
+                cur.execute("""
+                    SELECT 
+                        COALESCE(model, 'Unknown') as model,
+                        COUNT(DISTINCT session_id) as session_count,
+                        SUM(api_call_count) as api_call_count,
+                        SUM(input_tokens) as input_tokens,
+                        SUM(output_tokens) as output_tokens,
+                        SUM(cache_read_tokens) as cache_read_tokens,
+                        SUM(cache_write_tokens) as cache_write_tokens,
+                        SUM(reasoning_tokens) as reasoning_tokens,
+                        SUM(estimated_cost_usd) as cost_usd,
+                        COALESCE(billing_provider, '') as billing_provider
+                    FROM session_model_usage
                     GROUP BY model
                     ORDER BY (SUM(input_tokens) + SUM(output_tokens)) DESC
                 """)
+            model_rows = [dict(r) for r in cur.fetchall()]
+
+            # Fallback to sessions table if session_model_usage was empty
+            if not model_rows:
+                if cutoff_ts is not None:
+                    cur.execute("""
+                        SELECT 
+                            COALESCE(model, 'Unknown') as model,
+                            COUNT(*) as session_count,
+                            SUM(api_call_count) as api_call_count,
+                            SUM(input_tokens) as input_tokens,
+                            SUM(output_tokens) as output_tokens,
+                            SUM(cache_read_tokens) as cache_read_tokens,
+                            SUM(cache_write_tokens) as cache_write_tokens,
+                            SUM(reasoning_tokens) as reasoning_tokens,
+                            SUM(estimated_cost_usd) as cost_usd,
+                            COALESCE(billing_provider, '') as billing_provider
+                        FROM sessions
+                        WHERE started_at >= ?
+                        GROUP BY model
+                        ORDER BY (SUM(input_tokens) + SUM(output_tokens)) DESC
+                    """, (cutoff_ts,))
+                else:
+                    cur.execute("""
+                        SELECT 
+                            COALESCE(model, 'Unknown') as model,
+                            COUNT(*) as session_count,
+                            SUM(api_call_count) as api_call_count,
+                            SUM(input_tokens) as input_tokens,
+                            SUM(output_tokens) as output_tokens,
+                            SUM(cache_read_tokens) as cache_read_tokens,
+                            SUM(cache_write_tokens) as cache_write_tokens,
+                            SUM(reasoning_tokens) as reasoning_tokens,
+                            SUM(estimated_cost_usd) as cost_usd,
+                            COALESCE(billing_provider, '') as billing_provider
+                        FROM sessions
+                        GROUP BY model
+                        ORDER BY (SUM(input_tokens) + SUM(output_tokens)) DESC
+                    """)
                 model_rows = [dict(r) for r in cur.fetchall()]
 
             # Annotate model rows with is_local and readable provider tag
@@ -642,6 +700,7 @@ class HermesReader:
             zero_cost_ratio = round((local_tokens / (local_tokens + cloud_tokens) * 100), 1) if (local_tokens + cloud_tokens) > 0 else 0.0
 
             return {
+                "time_range": time_range,
                 "total_sessions": sess_summary.get("total_sessions") or 0,
                 "total_messages": sess_summary.get("total_messages") or 0,
                 "total_input_tokens": total_input,
