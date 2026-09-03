@@ -306,160 +306,154 @@ class NodeTelemetryCollector:
         try:
             async with httpx.AsyncClient(timeout=timeout_sec) as client:
                 # -------------------------------------------------------------
-                # 1. Probe for llama.cpp / llama-server (/v1/models + /slots)
+                # 1. Probe for Ollama endpoint (/api/version, /api/ps, /api/tags)
                 # -------------------------------------------------------------
-                is_llamacpp = False
                 try:
-                    models_res = await client.get(f"{base_url}/v1/models")
-                    if models_res.status_code == 200:
+                    ver_res = await client.get(f"{base_url}/api/version")
+                    if ver_res.status_code == 200:
                         t_end = time.time()
                         result["latency_ms"] = round((t_end - t_start) * 1000, 1)
                         result["reachable"] = True
-                        data_json = models_res.json()
+                        ver_str = ver_res.json().get("version", "")
+                        result["backend_type"] = "ollama"
+                        result["version"] = f"ollama v{ver_str}" if ver_str else "ollama"
 
-                        # Check if this is llama.cpp
-                        items = data_json.get("data", []) or []
-                        owned_by = items[0].get("owned_by", "") if items else ""
-                        if owned_by == "llamacpp" or "llamacpp" in str(data_json).lower() or "/slots" in str(data_json):
-                            is_llamacpp = True
+                        # Running models in VRAM (/api/ps)
+                        try:
+                            ps_res = await client.get(f"{base_url}/api/ps")
+                            if ps_res.status_code == 200:
+                                models_data = ps_res.json().get("models", [])
+                                parsed_models = []
+                                for m in models_data:
+                                    size_vram = m.get("size_vram", 0)
+                                    size = m.get("size", 0)
+                                    details = m.get("details", {})
+                                    parsed_models.append({
+                                        "name": m.get("name") or m.get("model"),
+                                        "model": m.get("model"),
+                                        "backend": "ollama",
+                                        "size_bytes": size,
+                                        "size_gb": round(size / (1024**3), 2),
+                                        "size_vram_bytes": size_vram,
+                                        "size_vram_gb": round(size_vram / (1024**3), 2),
+                                        "parameter_size": details.get("parameter_size"),
+                                        "quantization_level": details.get("quantization_level"),
+                                        "format": details.get("format"),
+                                        "family": details.get("family"),
+                                        "expires_at": m.get("expires_at"),
+                                        "status": "resident_in_vram",
+                                    })
+                                result["loaded_models"] = parsed_models
+                        except Exception as e:
+                            result["error"] = f"ps error: {str(e)}"
 
-                        if is_llamacpp or items:
-                            result["backend_type"] = "llama.cpp (llama-server)"
-                            parsed_models = []
-                            for itm in items:
-                                mid = itm.get("id") or itm.get("name")
-                                meta = itm.get("meta", {})
-                                size_bytes = meta.get("size", 0)
-                                size_gb = round(size_bytes / (1024**3), 2) if size_bytes else 0.0
-                                n_params = meta.get("n_params", 0)
-                                param_str = f"{round(n_params / 1e9, 1)}B" if n_params else "177B MoE"
-                                ftype = meta.get("ftype", "")
-                                n_ctx = meta.get("n_ctx", 0)
+                        # Available tags on disk (/api/tags)
+                        try:
+                            tags_res = await client.get(f"{base_url}/api/tags")
+                            if tags_res.status_code == 200:
+                                models_list = tags_res.json().get("models", [])
+                                result["available_models"] = [
+                                    {
+                                        "name": m.get("name"),
+                                        "size_gb": round(m.get("size", 0) / (1024**3), 2),
+                                        "modified_at": m.get("modified_at"),
+                                        "parameter_size": m.get("details", {}).get("parameter_size"),
+                                        "quantization": m.get("details", {}).get("quantization_level"),
+                                    }
+                                    for m in models_list
+                                ]
+                        except Exception:
+                            pass
 
-                                parsed_models.append({
-                                    "name": mid,
-                                    "model": mid,
-                                    "backend": "llama-server",
-                                    "size_bytes": size_bytes,
-                                    "size_gb": size_gb,
-                                    "size_vram_bytes": size_bytes,
-                                    "size_vram_gb": size_gb,
-                                    "parameter_size": param_str,
-                                    "quantization_level": ftype or "GGUF",
-                                    "format": "gguf",
-                                    "context_length": n_ctx or 262144,
-                                    "embedding_dim": meta.get("n_embd", 2560),
-                                    "family": "qwen",
-                                    "status": "resident_in_vram",
-                                })
-                            result["loaded_models"] = parsed_models
-                            result["available_models"] = [
-                                {
-                                    "name": m["name"],
-                                    "size_gb": m["size_gb"],
-                                    "parameter_size": m["parameter_size"],
-                                    "quantization": m["quantization_level"],
-                                    "context_length": m["context_length"],
-                                }
-                                for m in parsed_models
-                            ]
-                            result["version"] = "llama-server (ROCm/Vulkan APU)"
-
-                            # Probe /slots for deep slot execution telemetry
-                            try:
-                                slots_res = await client.get(f"{base_url}/slots")
-                                if slots_res.status_code == 200:
-                                    slots_data = slots_res.json()
-                                    if isinstance(slots_data, list):
-                                        result["slots"] = slots_data
-                                        active_cnt = sum(1 for s in slots_data if s.get("is_processing", False))
-                                        total_p_proc = sum(s.get("n_prompt_tokens_processed", 0) for s in slots_data)
-                                        total_p_cache = sum(s.get("n_prompt_tokens_cache", 0) for s in slots_data)
-                                        active_tasks = [s.get("id_task") for s in slots_data if s.get("is_processing") and s.get("id_task") is not None]
-
-                                        result["slot_summary"] = {
-                                            "total_slots": len(slots_data),
-                                            "active_slots": active_cnt,
-                                            "idle_slots": len(slots_data) - active_cnt,
-                                            "total_prompt_tokens_processed": total_p_proc,
-                                            "total_prompt_tokens_cache": total_p_cache,
-                                            "active_tasks": active_tasks,
-                                        }
-                            except Exception:
-                                pass
-
-                            # Probe /props
-                            try:
-                                props_res = await client.get(f"{base_url}/props")
-                                if props_res.status_code == 200:
-                                    result["generation_settings"] = props_res.json().get("default_generation_settings", {})
-                            except Exception:
-                                pass
-
-                            return result
+                        return result
                 except Exception:
                     pass
 
                 # -------------------------------------------------------------
-                # 2. Probe for Ollama endpoint (/api/version, /api/ps, /api/tags)
+                # 2. Probe for llama.cpp / llama-server (/props, /slots, /v1/models)
                 # -------------------------------------------------------------
-                ver_res = await client.get(f"{base_url}/api/version")
-                t_end = time.time()
-                result["latency_ms"] = round((t_end - t_start) * 1000, 1)
+                try:
+                    models_res = await client.get(f"{base_url}/v1/models")
+                    props_res = await client.get(f"{base_url}/props")
+                    slots_res = await client.get(f"{base_url}/slots")
 
-                if ver_res.status_code == 200:
-                    result["reachable"] = True
-                    result["backend_type"] = "ollama"
-                    result["version"] = ver_res.json().get("version")
+                    if models_res.status_code == 200 or props_res.status_code == 200 or slots_res.status_code == 200:
+                        t_end = time.time()
+                        result["latency_ms"] = round((t_end - t_start) * 1000, 1)
+                        result["reachable"] = True
+                        result["backend_type"] = "llama.cpp (llama-server)"
+                        result["version"] = "llama-server (ROCm/Vulkan APU)"
 
-                    # Running models in VRAM (/api/ps)
-                    try:
-                        ps_res = await client.get(f"{base_url}/api/ps")
-                        if ps_res.status_code == 200:
-                            models_data = ps_res.json().get("models", [])
-                            parsed_models = []
-                            for m in models_data:
-                                size_vram = m.get("size_vram", 0)
-                                size = m.get("size", 0)
-                                details = m.get("details", {})
-                                parsed_models.append({
-                                    "name": m.get("name") or m.get("model"),
-                                    "model": m.get("model"),
-                                    "backend": "ollama",
-                                    "size_bytes": size,
-                                    "size_gb": round(size / (1024**3), 2),
-                                    "size_vram_bytes": size_vram,
-                                    "size_vram_gb": round(size_vram / (1024**3), 2),
-                                    "parameter_size": details.get("parameter_size"),
-                                    "quantization_level": details.get("quantization_level"),
-                                    "format": details.get("format"),
-                                    "family": details.get("family"),
-                                    "expires_at": m.get("expires_at"),
-                                    "status": "resident_in_vram",
-                                })
-                            result["loaded_models"] = parsed_models
-                    except Exception as e:
-                        result["error"] = f"ps error: {str(e)}"
+                        items = []
+                        if models_res.status_code == 200:
+                            data_json = models_res.json()
+                            items = data_json.get("data", []) or data_json.get("models", []) or []
 
-                    # Available tags (/api/tags)
-                    try:
-                        tags_res = await client.get(f"{base_url}/api/tags")
-                        if tags_res.status_code == 200:
-                            models_list = tags_res.json().get("models", [])
-                            result["available_models"] = [
-                                {
-                                    "name": m.get("name"),
-                                    "size_gb": round(m.get("size", 0) / (1024**3), 2),
-                                    "modified_at": m.get("modified_at"),
-                                    "parameter_size": m.get("details", {}).get("parameter_size"),
-                                    "quantization": m.get("details", {}).get("quantization_level"),
+                        parsed_models = []
+                        for itm in items:
+                            mid = itm.get("id") or itm.get("name")
+                            meta = itm.get("meta", {})
+                            size_bytes = meta.get("size", 0)
+                            size_gb = round(size_bytes / (1024**3), 2) if size_bytes else 0.0
+                            n_params = meta.get("n_params", 0)
+                            param_str = f"{round(n_params / 1e9, 1)}B" if n_params else "177B MoE"
+                            ftype = meta.get("ftype", "")
+                            n_ctx = meta.get("n_ctx", 0)
+
+                            parsed_models.append({
+                                "name": mid,
+                                "model": mid,
+                                "backend": "llama-server",
+                                "size_bytes": size_bytes,
+                                "size_gb": size_gb,
+                                "size_vram_bytes": size_bytes,
+                                "size_vram_gb": size_gb,
+                                "parameter_size": param_str,
+                                "quantization_level": ftype or "GGUF",
+                                "format": "gguf",
+                                "context_length": n_ctx or 262144,
+                                "embedding_dim": meta.get("n_embd", 2560),
+                                "family": "qwen",
+                                "status": "resident_in_vram",
+                            })
+                        result["loaded_models"] = parsed_models
+                        result["available_models"] = [
+                            {
+                                "name": m["name"],
+                                "size_gb": m["size_gb"],
+                                "parameter_size": m["parameter_size"],
+                                "quantization": m["quantization_level"],
+                                "context_length": m["context_length"],
+                            }
+                            for m in parsed_models
+                        ]
+
+                        # Probe /slots for deep slot execution telemetry
+                        if slots_res.status_code == 200:
+                            slots_data = slots_res.json()
+                            if isinstance(slots_data, list):
+                                result["slots"] = slots_data
+                                active_cnt = sum(1 for s in slots_data if s.get("is_processing", False))
+                                total_p_proc = sum(s.get("n_prompt_tokens_processed", 0) for s in slots_data)
+                                total_p_cache = sum(s.get("n_prompt_tokens_cache", 0) for s in slots_data)
+                                active_tasks = [s.get("id_task") for s in slots_data if s.get("is_processing") and s.get("id_task") is not None]
+
+                                result["slot_summary"] = {
+                                    "total_slots": len(slots_data),
+                                    "active_slots": active_cnt,
+                                    "idle_slots": len(slots_data) - active_cnt,
+                                    "total_prompt_tokens_processed": total_p_proc,
+                                    "total_prompt_tokens_cache": total_p_cache,
+                                    "active_tasks": active_tasks,
                                 }
-                                for m in models_list
-                            ]
-                    except Exception:
-                        pass
-                else:
-                    result["error"] = f"HTTP status {ver_res.status_code}"
+
+                        # Probe /props
+                        if props_res.status_code == 200:
+                            result["generation_settings"] = props_res.json().get("default_generation_settings", {})
+
+                        return result
+                except Exception:
+                    pass
 
         except Exception as exc:
             result["reachable"] = False
