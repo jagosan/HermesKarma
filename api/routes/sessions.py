@@ -22,16 +22,18 @@ def list_sessions(
     source: Optional[str] = None,
     model: Optional[str] = None,
     search: Optional[str] = None,
+    persona: Optional[str] = None,
     date_from: Optional[float] = None,
     date_to: Optional[float] = None,
 ):
-    """Retrieve filtered sessions list with multi-model usage breakdown and ticket links."""
+    """Retrieve filtered sessions list with multi-model usage breakdown, ticket links, and persona tags."""
     return hermes_reader.get_sessions(
         limit=limit,
         offset=offset,
         source=source,
         model=model,
         search=search,
+        persona=persona,
         date_from=date_from,
         date_to=date_to,
     )
