@@ -90,6 +90,8 @@ async function loadSessions() {
   const search = document.getElementById('sessionSearch').value;
   const platform = document.getElementById('filterPlatform').value;
   const model = document.getElementById('filterModel').value;
+  const personaSelect = document.getElementById('filterPersonaSelect');
+  const persona = personaSelect ? personaSelect.value : '';
 
   const params = new URLSearchParams({
     limit: pageSize,
@@ -98,6 +100,7 @@ async function loadSessions() {
   if (search) params.append('search', search);
   if (platform) params.append('source', platform);
   if (model) params.append('model', model);
+  if (persona) params.append('persona', persona);
 
   try {
     const res = await fetch(`/api/sessions?${params.toString()}`);
@@ -135,6 +138,14 @@ async function loadSessions() {
       const subagentBadge = (s.subagent_count && s.subagent_count > 0) ?
         `<span class="px-1.5 py-0.5 rounded bg-indigo-950/80 border border-indigo-500/30 text-indigo-300 text-[10px] font-mono flex items-center space-x-1" title="${s.subagent_count} subagents dispatched"><i data-lucide="bot" class="w-2.5 h-2.5"></i><span>${s.subagent_count} sub</span></span>` : '';
 
+      // Persona badge
+      let personaBadge = '';
+      if (s.persona_id) {
+        personaBadge = `<span class="px-1.5 py-0.5 rounded bg-amber-950/80 border border-amber-500/40 text-amber-300 text-[10px] font-mono flex items-center space-x-1" title="Swarm Persona: ${s.persona_name} (${s.is_subagent ? 'Subagent' : 'Profile'})"><span>${s.persona_emoji || '🤖'}</span><span>${s.persona_name}${s.is_subagent ? ' Sub' : ''}</span></span>`;
+      } else if (s.is_subagent) {
+        personaBadge = `<span class="px-1.5 py-0.5 rounded bg-indigo-950/80 border border-indigo-500/30 text-indigo-300 text-[10px] font-mono">🤖 Subagent</span>`;
+      }
+
       // Render comprehensive models used badges
       const modelsList = s.models_used || [];
       let modelPills = '';
@@ -160,6 +171,7 @@ async function loadSessions() {
             <div class="font-medium text-slate-200 truncate group-hover:text-brand-400 transition" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
             <div class="text-[11px] text-slate-400 font-mono truncate flex flex-wrap items-center gap-1.5 mt-0.5">
               <span>${s.session_id}</span>
+              ${personaBadge}
               ${branch}
               ${tickets}
               ${detectedTicket}
@@ -539,88 +551,109 @@ async function loadAnalytics() {
 function renderAnalyticsCharts(data) {
   // 1. Model chart
   const modelCtx = document.getElementById('modelChart');
-  if (modelChartInstance) modelChartInstance.destroy();
-
-  const modelLabels = (data.model_distribution || []).map(m => m.model);
-  const modelTokens = (data.model_distribution || []).map(m => (m.input_tokens || 0) + (m.output_tokens || 0));
-
-  modelChartInstance = new Chart(modelCtx, {
-    type: 'doughnut',
-    data: {
-      labels: modelLabels,
-      datasets: [{
-        data: modelTokens,
-        backgroundColor: ['#8b5cf6', '#6366f1', '#10b981', '#f59e0b', '#ec4899', '#06b6d4', '#3b82f6', '#14b8a6', '#a855f7', '#e11d48']
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { position: 'bottom', labels: { color: '#94a3b8', font: { size: 9 }, boxWidth: 10 } }
-      }
+  if (modelCtx) {
+    if (modelChartInstance) {
+      try { modelChartInstance.destroy(); } catch (e) {}
     }
-  });
+    const modelLabels = (data.model_distribution || []).map(m => m.model);
+    const modelTokens = (data.model_distribution || []).map(m => (m.input_tokens || 0) + (m.output_tokens || 0));
+
+    try {
+      modelChartInstance = new Chart(modelCtx, {
+        type: 'doughnut',
+        data: {
+          labels: modelLabels,
+          datasets: [{
+            data: modelTokens,
+            backgroundColor: ['#8b5cf6', '#6366f1', '#10b981', '#f59e0b', '#ec4899', '#06b6d4', '#3b82f6', '#14b8a6', '#a855f7', '#e11d48']
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'bottom', labels: { color: '#94a3b8', font: { size: 9 }, boxWidth: 10 } }
+          }
+        }
+      });
+    } catch (err) {
+      console.warn('Error creating model chart:', err);
+    }
+  }
 
   // 2. Provider breakdown chart
   const providerCtx = document.getElementById('providerChart');
-  if (providerChartInstance) providerChartInstance.destroy();
-
-  const providerLabels = (data.provider_distribution || []).map(p => p.provider);
-  const providerTokens = (data.provider_distribution || []).map(p => (p.input_tokens || 0) + (p.output_tokens || 0));
-
-  providerChartInstance = new Chart(providerCtx, {
-    type: 'bar',
-    data: {
-      labels: providerLabels,
-      datasets: [{
-        label: 'Tokens',
-        data: providerTokens,
-        backgroundColor: ['#10b981', '#8b5cf6', '#6366f1', '#f59e0b', '#06b6d4']
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        x: { ticks: { color: '#94a3b8', font: { size: 9 } } },
-        y: { ticks: { color: '#94a3b8', font: { size: 9 } } }
-      },
-      plugins: {
-        legend: { display: false }
-      }
+  if (providerCtx) {
+    if (providerChartInstance) {
+      try { providerChartInstance.destroy(); } catch (e) {}
     }
-  });
+    const providerLabels = (data.provider_distribution || []).map(p => p.provider);
+    const providerTokens = (data.provider_distribution || []).map(p => (p.input_tokens || 0) + (p.output_tokens || 0));
+
+    try {
+      providerChartInstance = new Chart(providerCtx, {
+        type: 'bar',
+        data: {
+          labels: providerLabels,
+          datasets: [{
+            label: 'Tokens',
+            data: providerTokens,
+            backgroundColor: ['#10b981', '#8b5cf6', '#6366f1', '#f59e0b', '#06b6d4']
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: { ticks: { color: '#94a3b8', font: { size: 9 } } },
+            y: { ticks: { color: '#94a3b8', font: { size: 9 } } }
+          },
+          plugins: {
+            legend: { display: false }
+          }
+        }
+      });
+    } catch (err) {
+      console.warn('Error creating provider chart:', err);
+    }
+  }
 
   // 3. Tool chart
   const toolCtx = document.getElementById('toolChart');
-  if (toolChartInstance) toolChartInstance.destroy();
-
-  const toolLabels = (data.tool_distribution || []).slice(0, 8).map(t => t.tool_name);
-  const toolCounts = (data.tool_distribution || []).slice(0, 8).map(t => t.count);
-
-  toolChartInstance = new Chart(toolCtx, {
-    type: 'bar',
-    data: {
-      labels: toolLabels,
-      datasets: [{
-        label: 'Executions',
-        data: toolCounts,
-        backgroundColor: '#6366f1'
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        x: { ticks: { color: '#94a3b8', font: { size: 9 } } },
-        y: { ticks: { color: '#94a3b8', font: { size: 9 } } }
-      },
-      plugins: {
-        legend: { display: false }
-      }
+  if (toolCtx) {
+    if (toolChartInstance) {
+      try { toolChartInstance.destroy(); } catch (e) {}
     }
-  });
+    const toolLabels = (data.tool_distribution || []).slice(0, 8).map(t => t.tool_name);
+    const toolCounts = (data.tool_distribution || []).slice(0, 8).map(t => t.count);
+
+    try {
+      toolChartInstance = new Chart(toolCtx, {
+        type: 'bar',
+        data: {
+          labels: toolLabels,
+          datasets: [{
+            label: 'Executions',
+            data: toolCounts,
+            backgroundColor: '#6366f1'
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: { ticks: { color: '#94a3b8', font: { size: 9 } } },
+            y: { ticks: { color: '#94a3b8', font: { size: 9 } } }
+          },
+          plugins: {
+            legend: { display: false }
+          }
+        }
+      });
+    } catch (err) {
+      console.warn('Error creating tool chart:', err);
+    }
+  }
 }
 
 // ----------------------------------------------------
@@ -757,19 +790,21 @@ async function openPantheonDrawer(profileId) {
     const sessTbody = document.getElementById('drawerSessionsTableBody');
     if (sessTbody) {
       if (!p.sessions || p.sessions.length === 0) {
-        sessTbody.innerHTML = `<tr><td colspan="6" class="py-6 text-center text-slate-500">No sessions executed in ~/.hermes/profiles/${p.id}/state.db yet</td></tr>`;
+        sessTbody.innerHTML = `<tr><td colspan="6" class="py-6 text-center text-slate-500">No sessions executed for this agent yet</td></tr>`;
       } else {
         sessTbody.innerHTML = p.sessions.map(s => {
           const dateStr = s.started_at ? new Date(s.started_at * 1000).toLocaleString() : 'N/A';
           const tok = (s.input_tokens || 0) + (s.output_tokens || 0);
+          const isSub = s.source === 'subagent' || s.parent_session_id;
+          const subBadge = isSub ? '<span class="ml-1.5 px-1.5 py-0.5 rounded bg-indigo-950/80 border border-indigo-500/30 text-indigo-300 text-[9px] font-mono">Subagent</span>' : '';
           return `
-            <tr class="hover:bg-slate-800/40">
-              <td class="py-2.5 px-3 text-brand-400 font-semibold">${escapeHtml(s.id)}</td>
-              <td class="py-2.5 px-3 text-slate-200 font-medium">${escapeHtml(s.title || 'Untitled Session')}</td>
-              <td class="py-2.5 px-3 text-slate-400">${escapeHtml(s.model || p.model)}</td>
-              <td class="py-2.5 px-3 text-slate-400">${s.message_count || 0}</td>
-              <td class="py-2.5 px-3 text-indigo-300">${tok.toLocaleString()}</td>
-              <td class="py-2.5 px-3 text-slate-500 text-[11px]">${dateStr}</td>
+            <tr class="hover:bg-slate-800/40 cursor-pointer" onclick="closePantheonDrawer(); openSessionTimeline('${s.id}')">
+              <td class="py-2.5 px-3 text-brand-400 font-semibold font-mono text-xs">${escapeHtml(s.id)}${subBadge}</td>
+              <td class="py-2.5 px-3 text-slate-200 font-medium text-xs">${escapeHtml(s.title || 'Untitled Session')}</td>
+              <td class="py-2.5 px-3 text-slate-400 font-mono text-xs">${escapeHtml(s.model || p.model)}</td>
+              <td class="py-2.5 px-3 text-slate-400 font-mono text-xs">${s.message_count || 0}</td>
+              <td class="py-2.5 px-3 text-indigo-300 font-mono text-xs">${tok.toLocaleString()}</td>
+              <td class="py-2.5 px-3 text-slate-500 text-[11px] font-mono">${dateStr}</td>
             </tr>
           `;
         }).join('');
@@ -935,33 +970,52 @@ function renderLiveCards(sessions) {
 
   container.innerHTML = sessions.map(s => {
     let statusClass = 'bg-emerald-950 text-emerald-400 border border-emerald-500/30';
-    if (s.status === 'RUNNING_TOOL') statusClass = 'bg-amber-950 text-amber-400 border border-amber-500/30 animate-pulse';
-    else if (s.status === 'WAITING') statusClass = 'bg-indigo-950 text-indigo-400 border border-indigo-500/30';
-    else if (s.status === 'STALE') statusClass = 'bg-slate-800 text-slate-400';
+    if (s.status === 'RUNNING_TOOL' || s.status === 'RUNNING_SUBAGENT') {
+      statusClass = 'bg-amber-950 text-amber-300 border border-amber-500/40 animate-pulse';
+    } else if (s.status === 'WAITING') {
+      statusClass = 'bg-indigo-950 text-indigo-400 border border-indigo-500/30';
+    } else if (s.status === 'STALE') {
+      statusClass = 'bg-slate-800 text-slate-400';
+    }
+
+    const isSubagent = s.is_subagent || s.platform === 'subagent';
+    const personaPill = s.persona_id ? 
+      `<span class="px-2 py-0.5 rounded bg-brand-950/80 border border-brand-500/30 text-brand-300 text-[11px] font-mono font-semibold flex items-center space-x-1"><span>${s.persona_emoji || '🤖'}</span><span>${s.persona_name}</span></span>` : '';
 
     return `
-      <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm space-y-3 flex flex-col justify-between">
+      <div class="bg-dark-900 border ${isSubagent ? 'border-amber-500/40' : 'border-slate-800/80'} rounded-xl p-5 shadow-sm space-y-3 flex flex-col justify-between">
         <div class="space-y-2">
           <div class="flex items-center justify-between">
             <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold ${statusClass}">
               ${s.status}
             </span>
-            <span class="text-xs text-slate-400 font-mono">${s.platform || 'cli'}</span>
+            <div class="flex items-center space-x-1.5">
+              ${personaPill}
+              <span class="text-xs text-slate-400 font-mono">${s.platform || 'cli'}</span>
+            </div>
           </div>
 
           <h3 class="font-bold text-slate-200 text-sm truncate" title="${escapeHtml(s.title)}">${escapeHtml(s.title || 'Session')}</h3>
-          <p class="text-xs text-slate-400 font-mono truncate">${s.session_id}</p>
+          <div class="flex items-center justify-between text-xs text-slate-400 font-mono">
+            <span class="truncate max-w-[160px]">${s.session_id}</span>
+            <span class="text-indigo-400 font-semibold truncate max-w-[120px]">${s.model || 'model'}</span>
+          </div>
 
           ${s.current_tool ? `
             <div class="p-2 rounded bg-dark-950 border border-amber-500/30 text-amber-300 font-mono text-xs flex items-center space-x-2">
               <i data-lucide="terminal" class="w-3.5 h-3.5"></i>
-              <span>Running: <strong>${escapeHtml(s.current_tool)}</strong></span>
+              <span>Tool: <strong>${escapeHtml(s.current_tool)}</strong></span>
             </div>
-          ` : ''}
+          ` : (s.last_line ? `
+            <div class="p-2 rounded bg-dark-950 border border-slate-800 text-slate-300 font-mono text-xs truncate">
+              <span class="text-slate-500">Log:</span> ${escapeHtml(s.last_line)}
+            </div>
+          ` : '')}
 
           <div class="text-[11px] text-slate-400 font-mono space-y-0.5 pt-2 border-t border-slate-800/60">
-            <div>PID: <span class="text-slate-200">${s.pid || 'N/A'}</span></div>
-            <div>Pane: <span class="text-slate-200">${s.tmux_pane || 'N/A'}</span></div>
+            ${s.parent_session_id ? `<div>Parent: <a href="#" onclick="openSessionTimeline('${s.parent_session_id}'); return false;" class="text-indigo-400 hover:underline">${s.parent_session_id}</a></div>` : ''}
+            <div>Age: <span class="text-slate-200">${s.age_seconds ? `${s.age_seconds}s ago` : 'Active'}</span></div>
+            <div>PID: <span class="text-slate-200">${s.pid || 'Subagent'}</span> • Pane: <span class="text-slate-200">${s.tmux_pane || 'N/A'}</span></div>
             <div class="truncate">Dir: <span class="text-slate-200">${escapeHtml(s.working_directory || '~')}</span></div>
           </div>
         </div>
@@ -973,7 +1027,7 @@ function renderLiveCards(sessions) {
 
           <button onclick="triggerFocusSession('${s.session_id}', ${s.pid || 'null'}, '${s.tmux_pane || ''}')" class="px-3 py-1.5 rounded bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold flex items-center space-x-1 shadow-sm">
             <i data-lucide="terminal" class="w-3 h-3"></i>
-            <span>Focus Terminal</span>
+            <span>Focus</span>
           </button>
         </div>
       </div>
@@ -1335,9 +1389,9 @@ function renderNodesGrid(nodes) {
                           </span>
                         </div>
                         <div class="text-[10px] text-slate-400 space-y-0.5">
-                          <div>Ctx: ${(s.n_ctx || 262144).toLocaleString()} | Task: <span class="text-slate-300">${s.id_task || 'None'}</span></div>
+                          <div>Ctx: ${(s.n_ctx || 262144).toLocaleString()} | Task: <span class="text-slate-300">${s.id_task || 'Idle'}</span></div>
                           <div>Tokens Processed: <span class="text-slate-200">${promptProcessed.toLocaleString()}</span> • Cache: <span class="text-emerald-400">${promptCache.toLocaleString()}</span></div>
-                          <div class="text-[9px] text-slate-500">Reasoning: ${s.params?.reasoning_format || 'deepseek'} • Temp: ${s.params?.temperature ? s.params.temperature.toFixed(2) : '0.10'}</div>
+                          <div class="text-[9px] text-slate-500">Worker Model: <span class="text-brand-300 font-semibold">${loadedModels[0]?.name || 'qwen3.8-flash-next'}</span> • Temp: ${s.params?.temperature !== undefined ? s.params.temperature.toFixed(2) : '0.70'}</div>
                         </div>
                       </div>
                     `;
@@ -1539,3 +1593,31 @@ async function syncTicketStatus(provider, ticketKey) {
     alert(`Sync failed: ${err.message}`);
   }
 }
+
+// Explicit window bindings for inline HTML handlers
+window.switchTab = switchTab;
+window.setAnalyticsTimeRange = setAnalyticsTimeRange;
+window.loadPantheon = loadPantheon;
+window.openPantheonDrawer = openPantheonDrawer;
+window.closePantheonDrawer = closePantheonDrawer;
+window.switchDrawerTab = switchDrawerTab;
+window.loadSessions = loadSessions;
+window.loadAnalytics = loadAnalytics;
+window.loadSkills = loadSkills;
+window.loadMemory = loadMemory;
+window.loadLiveSessions = loadLiveSessions;
+window.loadCron = loadCron;
+window.loadNodes = loadNodes;
+window.loadTickets = loadTickets;
+window.changePage = changePage;
+window.filterSessions = filterSessions;
+window.filterSkillsList = filterSkillsList;
+window.refreshAllNodes = refreshAllNodes;
+window.refreshSingleNode = refreshSingleNode;
+window.openTimeline = openTimeline;
+window.closeTimeline = closeTimeline;
+window.switchModalTab = switchModalTab;
+window.selectSkill = selectSkill;
+window.saveSessionMetadata = saveSessionMetadata;
+window.addTicketToSession = addTicketToSession;
+window.syncTicketStatus = syncTicketStatus;

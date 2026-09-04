@@ -668,6 +668,41 @@ class TestHermesKarma(unittest.TestCase):
         res_404 = self.client.get("/api/pantheon/profiles/nonexistent_agent_xyz")
         self.assertEqual(res_404.status_code, 404)
 
+    def test_persona_attribution_and_subagents(self):
+        """Test attribution helper and sessions persona filtering."""
+        # Subagent with qwen on chunkito -> Tigger
+        tigger_sub = {
+            "title": "Implement Vocabulous endpoints",
+            "source": "subagent",
+            "model": "qwen3.8-flash-next:262k",
+            "billing_provider": "chunkito"
+        }
+        self.assertEqual(hermes_reader.attribute_session_persona(tigger_sub), "tigger")
+
+        # Subagent with ERNIE -> Eeyore
+        eeyore_sub = {
+            "title": "Security audit",
+            "source": "subagent",
+            "model": "hf.co/unsloth/ERNIE-4.5-21B-A3B-Thinking-GGUF:Q4_K_M"
+        }
+        self.assertEqual(hermes_reader.attribute_session_persona(eeyore_sub), "eeyore")
+
+        # Subagent with vault keyword -> Pooh
+        pooh_sub = {
+            "title": "Obsidian vault runbook gardening",
+            "source": "subagent",
+            "model": "qwen3.8-flash-next:262k"
+        }
+        self.assertEqual(hermes_reader.attribute_session_persona(pooh_sub), "pooh")
+
+        # Test API filtering by persona
+        res = self.client.get("/api/sessions?persona=tigger")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("sessions", data)
+        for s in data["sessions"]:
+            self.assertEqual(s.get("persona_id"), "tigger")
+
 
 if __name__ == "__main__":
     unittest.main()
