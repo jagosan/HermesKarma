@@ -131,6 +131,7 @@ class HermesReader:
         source: Optional[str] = None,
         model: Optional[str] = None,
         search: Optional[str] = None,
+        persona: Optional[str] = None,
         date_from: Optional[float] = None,
         date_to: Optional[float] = None,
     ) -> Dict[str, Any]:
@@ -166,18 +167,34 @@ class HermesReader:
 
             where_clause = " AND ".join(conditions)
 
-            # Count total
-            cur.execute(f"SELECT COUNT(*) FROM sessions WHERE {where_clause}", params)
-            total = cur.fetchone()[0]
+            # If filtering by persona, fetch all candidate rows and filter post-attribution to maintain exact counts
+            if persona:
+                cur.execute(f"""
+                    SELECT * FROM sessions
+                    WHERE {where_clause}
+                    ORDER BY started_at DESC
+                """, params)
+                all_candidate_rows = cur.fetchall()
+                filtered_rows = []
+                for r in all_candidate_rows:
+                    rd = dict(r)
+                    if self.attribute_session_persona(rd) == persona.lower() or rd.get("profile_name") == persona.lower():
+                        filtered_rows.append(rd)
+                total = len(filtered_rows)
+                rows = filtered_rows[offset:offset + limit]
+            else:
+                # Count total
+                cur.execute(f"SELECT COUNT(*) FROM sessions WHERE {where_clause}", params)
+                total = cur.fetchone()[0]
 
-            # Fetch rows
-            cur.execute(f"""
-                SELECT * FROM sessions
-                WHERE {where_clause}
-                ORDER BY started_at DESC
-                LIMIT ? OFFSET ?
-            """, params + [limit, offset])
-            rows = cur.fetchall()
+                # Fetch rows
+                cur.execute(f"""
+                    SELECT * FROM sessions
+                    WHERE {where_clause}
+                    ORDER BY started_at DESC
+                    LIMIT ? OFFSET ?
+                """, params + [limit, offset])
+                rows = [dict(r) for r in cur.fetchall()]
 
             session_ids = [r["id"] for r in rows]
 
@@ -219,10 +236,35 @@ class HermesReader:
             # Merge with metadata
             meta_map = metadata_service.get_all_session_metadata_map()
             sessions = []
-            for r in rows:
-                item = dict(r)
+            for item in rows:
                 sid = item.get("id")
                 item["session_id"] = sid
+
+                # Hydrate missing title for subagents from first message
+                if not item.get("title") and (item.get("source") == "subagent" or item.get("parent_session_id")):
+                    try:
+                        msg_row = cur.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id ASC LIMIT 1", (sid,)).fetchone()
+                        if msg_row and msg_row[0]:
+                            item["title"] = msg_row[0][:80].replace("\n", " ").strip()
+                        else:
+                            item["title"] = f"Subagent Task ({sid})"
+                    except Exception:
+                        item["title"] = f"Subagent Task ({sid})"
+
+                # Tag persona
+                p_id = self.attribute_session_persona(item)
+                if p_id and p_id in self.ROSTER_META:
+                    p_meta = self.ROSTER_META[p_id]
+                    item["persona_id"] = p_id
+                    item["persona_name"] = p_meta.get("name")
+                    item["persona_emoji"] = p_meta.get("emoji")
+                else:
+                    item["persona_id"] = None
+                    item["persona_name"] = None
+                    item["persona_emoji"] = None
+
+                item["is_subagent"] = item.get("source") == "subagent" or bool(item.get("parent_session_id"))
+
                 item["metadata"] = meta_map.get(sid, {
                     "tags": [],
                     "notes": "",
@@ -851,75 +893,131 @@ class HermesReader:
 
         return jobs
 
+    ROSTER_META = {
+        "owl": {
+            "name": "Owl",
+            "emoji": "🦉",
+            "role": "Chief Architect & Master Reasoning",
+            "domain": "Architecture blueprints, trade-off arbitration, failure domains, ADRs, Mermaid graphs",
+            "default_model": "gemini-3.7-flash",
+            "accent_color": "emerald",
+        },
+        "rabbit": {
+            "name": "Rabbit",
+            "emoji": "🐰",
+            "role": "Taskmaster & Kanban Coordinator",
+            "domain": "Decomposing specs into atomic Kanban tasks, dependency chains, sprint cadence",
+            "default_model": "hf.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:UD-IQ2_M",
+            "accent_color": "brand",
+        },
+        "tigger": {
+            "name": "Tigger",
+            "emoji": "🐯",
+            "role": "DevOps & Systems Executor",
+            "domain": "Isolated git worktrees, hands-on coding, test suite execution, fast build loops",
+            "default_model": "qwen3.8-flash-next:262k",
+            "accent_color": "amber",
+        },
+        "piglet": {
+            "name": "Piglet",
+            "emoji": "🐷",
+            "role": "Agile Scout & Log Triager",
+            "domain": "Rapid log sniffing, tracebacks triage, lightweight classifications, micro-summaries",
+            "default_model": "qwen3.5:latest",
+            "accent_color": "rose",
+        },
+        "eeyore": {
+            "name": "Eeyore",
+            "emoji": "🫏",
+            "role": "Safety Officer & Adversarial Auditor",
+            "domain": "Pre-commit security audits, permission leakage, secret exposure, network partition resilience",
+            "default_model": "hf.co/unsloth/ERNIE-4.5-21B-A3B-Thinking-GGUF:Q4_K_M",
+            "accent_color": "indigo",
+        },
+        "pooh": {
+            "name": "Pooh",
+            "emoji": "🐻",
+            "role": "Knowledge Gardener & Vault Curator",
+            "domain": "Obsidian vault curation, runbook gardening, wikilinks indexing, daily logs",
+            "default_model": "qwen3.8-flash-next:262k",
+            "accent_color": "amber",
+        },
+        "coder": {
+            "name": "Coder",
+            "emoji": "💻",
+            "role": "Autonomous Software Engineer",
+            "domain": "Full-stack feature engineering, test-driven development, deep debugging, refactoring",
+            "default_model": "qwen3-coder-next:q8_0",
+            "accent_color": "blue",
+        },
+        "ingest": {
+            "name": "Ingest",
+            "emoji": "📥",
+            "role": "Knowledge Ingest & Article Synthesizer",
+            "domain": "Web extraction, PDF document synthesis, cognitive graph enrichment, note capture",
+            "default_model": "qwen3-coder-next:q8_0",
+            "accent_color": "teal",
+        },
+    }
+
+    def attribute_session_persona(self, session: Dict[str, Any]) -> Optional[str]:
+        """Infer which Pantheon swarm agent a session belongs to."""
+        # 1. Direct profile name match
+        prof = (session.get("profile_name") or "").lower()
+        if prof in self.ROSTER_META:
+            return prof
+
+        # 2. Textual persona mentions in title, goal, context, cwd, or custom notes
+        text = f"{session.get('title') or ''} {session.get('goal') or ''} {session.get('context') or ''} {session.get('cwd') or ''}".lower()
+        if "@owl" in text or "owl:" in text or "🦉" in text:
+            return "owl"
+        if "@rabbit" in text or "rabbit:" in text or "🐰" in text:
+            return "rabbit"
+        if "@tigger" in text or "tigger:" in text or "🐯" in text:
+            return "tigger"
+        if "@piglet" in text or "piglet:" in text or "🐷" in text:
+            return "piglet"
+        if "@eeyore" in text or "eeyore:" in text or "🫏" in text:
+            return "eeyore"
+        if "@pooh" in text or "pooh:" in text or "🐻" in text:
+            return "pooh"
+        if "@coder" in text or "coder:" in text or "💻" in text:
+            return "coder"
+        if "@ingest" in text or "ingest:" in text or "📥" in text:
+            return "ingest"
+
+        # 3. Model & source matching for subagents and delegations
+        is_subagent = (
+            session.get("source") == "subagent"
+            or bool(session.get("parent_session_id"))
+            or "delegation_id" in session
+            or session.get("is_subagent")
+        )
+        model = (session.get("model") or "").lower()
+        provider = (session.get("billing_provider") or "").lower()
+
+        if is_subagent:
+            if "ernie" in model:
+                return "eeyore"
+            elif "qwen3.5" in model:
+                return "piglet"
+            elif "qwen3-30b" in model:
+                return "rabbit"
+            elif "qwen3-coder" in model:
+                return "coder"
+            elif "qwen3.8-flash-next" in model or "chunkito" in provider or "chunkito" in model:
+                if re.search(r'\b(vault|gardener|gardening|curat|curating|wikilink|runbook)\b', text, re.IGNORECASE):
+                    return "pooh"
+                return "tigger"
+            elif "gemini" in model:
+                return "owl"
+
+        return None
+
     def get_pantheon_profiles(self) -> List[Dict[str, Any]]:
         """Scan ~/.hermes/profiles/ and aggregate metadata, sessions, tokens, skills, and memory for each Pantheon swarm agent."""
         profiles_dir = HERMES_DIR / "profiles"
-        roster_meta = {
-            "owl": {
-                "name": "Owl",
-                "emoji": "🦉",
-                "role": "Chief Architect & Master Reasoning",
-                "domain": "Architecture blueprints, trade-off arbitration, failure domains, ADRs, Mermaid graphs",
-                "default_model": "gemini-3.7-flash",
-                "accent_color": "emerald",
-            },
-            "rabbit": {
-                "name": "Rabbit",
-                "emoji": "🐰",
-                "role": "Taskmaster & Kanban Coordinator",
-                "domain": "Decomposing specs into atomic Kanban tasks, dependency chains, sprint cadence",
-                "default_model": "hf.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:UD-IQ2_M",
-                "accent_color": "brand",
-            },
-            "tigger": {
-                "name": "Tigger",
-                "emoji": "🐯",
-                "role": "DevOps & Systems Executor",
-                "domain": "Isolated git worktrees, hands-on coding, test suite execution, fast build loops",
-                "default_model": "qwen3.8-flash-next:262k",
-                "accent_color": "amber",
-            },
-            "piglet": {
-                "name": "Piglet",
-                "emoji": "🐷",
-                "role": "Agile Scout & Log Triager",
-                "domain": "Rapid log sniffing, tracebacks triage, lightweight classifications, micro-summaries",
-                "default_model": "qwen3.5:latest",
-                "accent_color": "rose",
-            },
-            "eeyore": {
-                "name": "Eeyore",
-                "emoji": "🫏",
-                "role": "Safety Officer & Adversarial Auditor",
-                "domain": "Pre-commit security audits, permission leakage, secret exposure, network partition resilience",
-                "default_model": "hf.co/unsloth/ERNIE-4.5-21B-A3B-Thinking-GGUF:Q4_K_M",
-                "accent_color": "indigo",
-            },
-            "pooh": {
-                "name": "Pooh",
-                "emoji": "🐻",
-                "role": "Knowledge Gardener & Vault Curator",
-                "domain": "Obsidian vault curation, runbook gardening, wikilinks indexing, daily logs",
-                "default_model": "qwen3.8-flash-next:262k",
-                "accent_color": "amber",
-            },
-            "coder": {
-                "name": "Coder",
-                "emoji": "💻",
-                "role": "Autonomous Software Engineer",
-                "domain": "Full-stack feature engineering, test-driven development, deep debugging, refactoring",
-                "default_model": "qwen3-coder-next:q8_0",
-                "accent_color": "blue",
-            },
-            "ingest": {
-                "name": "Ingest",
-                "emoji": "📥",
-                "role": "Knowledge Ingest & Article Synthesizer",
-                "domain": "Web extraction, PDF document synthesis, cognitive graph enrichment, note capture",
-                "default_model": "qwen3-coder-next:q8_0",
-                "accent_color": "teal",
-            },
-        }
+        roster_meta = self.ROSTER_META
 
         agent_profiles = []
         if not profiles_dir.exists():
@@ -927,39 +1025,54 @@ class HermesReader:
 
         import yaml
 
-        for p_dir in sorted(profiles_dir.iterdir()):
-            if not p_dir.is_dir() or p_dir.name.startswith("."):
-                continue
+        # Fetch all subagent sessions from main state.db for persona aggregation
+        main_conn = self._get_ro_conn()
+        all_main_sessions = []
+        if main_conn:
+            try:
+                with main_conn:
+                    m_cur = main_conn.cursor()
+                    rows = m_cur.execute("""
+                        SELECT id, title, model, started_at, ended_at, message_count, 
+                               tool_call_count, input_tokens, output_tokens, cache_read_tokens, 
+                               estimated_cost_usd, git_branch, profile_name, source, parent_session_id, cwd, billing_provider
+                        FROM sessions
+                    """).fetchall()
+                    for row in rows:
+                        s_dict = dict(row)
+                        # Hydrate title from first message if missing for subagent
+                        if not s_dict.get("title") and (s_dict.get("source") == "subagent" or s_dict.get("parent_session_id")):
+                            msg_row = m_cur.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id ASC LIMIT 1", (s_dict["id"],)).fetchone()
+                            if msg_row and msg_row[0]:
+                                s_dict["title"] = msg_row[0][:80].replace("\n", " ").strip()
+                            else:
+                                s_dict["title"] = f"Subagent Task ({s_dict['id']})"
+                        all_main_sessions.append(s_dict)
+            except Exception:
+                pass
 
-            p_id = p_dir.name
-            meta = roster_meta.get(p_id, {
-                "name": p_id.capitalize(),
-                "emoji": "🤖",
-                "role": "Specialist Agent",
-                "domain": "Autonomous subtask execution",
-                "default_model": "gemini-3.7-flash",
-                "accent_color": "slate",
-            })
+        for p_id, meta in roster_meta.items():
+            p_dir = profiles_dir / p_id
 
             # 1. Profile config & soul
-            prof_file = p_dir / "profile.yaml"
+            prof_file = p_dir / "profile.yaml" if p_dir.exists() else None
             prof_data = {}
-            if prof_file.exists():
+            if prof_file and prof_file.exists():
                 try:
                     prof_data = yaml.safe_load(prof_file.read_text(encoding="utf-8")) or {}
                 except Exception:
                     pass
 
-            conf_file = p_dir / "config.yaml"
+            conf_file = p_dir / "config.yaml" if p_dir.exists() else None
             conf_data = {}
-            if conf_file.exists():
+            if conf_file and conf_file.exists():
                 try:
                     conf_data = yaml.safe_load(conf_file.read_text(encoding="utf-8")) or {}
                 except Exception:
                     pass
 
-            soul_file = p_dir / "SOUL.md"
-            soul_content = soul_file.read_text(encoding="utf-8").strip() if soul_file.exists() else ""
+            soul_file = p_dir / "SOUL.md" if p_dir.exists() else None
+            soul_content = soul_file.read_text(encoding="utf-8").strip() if soul_file and soul_file.exists() else ""
 
             # Extract first paragraph of SOUL as personality summary
             soul_summary = ""
@@ -968,20 +1081,21 @@ class HermesReader:
                 soul_summary = paragraphs[0] if paragraphs else soul_content[:200]
 
             model_name = conf_data.get("model", {}).get("default") or meta.get("default_model", "qwen3.8-flash-next:262k")
-            provider_name = conf_data.get("model", {}).get("provider") or "chunkito"
+            provider_name = conf_data.get("model", {}).get("provider") or ("chunkito" if self._is_local_model(model_name) else "gemini")
             is_local = self._is_local_model(model_name, provider_name)
 
-            # 2. Per-profile SQLite database inspection
-            p_db = p_dir / "state.db"
+            # 2. Collect sessions from standalone profile DB (if exists)
+            p_db = p_dir / "state.db" if p_dir.exists() else None
             sess_count = 0
             tokens_in = 0
             tokens_out = 0
             cache_read = 0
             cost_usd = 0.0
             msg_count = 0
-            recent_sessions = []
+            collected_sessions = []
+            seen_ids = set()
 
-            if p_db.exists():
+            if p_db and p_db.exists():
                 try:
                     conn = sqlite3.connect(f"file:{p_db}?mode=ro", uri=True)
                     conn.row_factory = sqlite3.Row
@@ -989,51 +1103,51 @@ class HermesReader:
                         cur = conn.cursor()
                         tables = [r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
                         if "sessions" in tables:
-                            r = cur.execute("SELECT COUNT(*), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(estimated_cost_usd), SUM(message_count) FROM sessions").fetchone()
-                            if r:
-                                sess_count += r[0] or 0
-                                tokens_in += r[1] or 0
-                                tokens_out += r[2] or 0
-                                cache_read += r[3] or 0
-                                cost_usd += r[4] or 0.0
-                                msg_count += r[5] or 0
-
-                            rows = cur.execute("SELECT id, title, model, started_at, message_count, input_tokens, output_tokens, estimated_cost_usd FROM sessions ORDER BY started_at DESC LIMIT 5").fetchall()
-                            recent_sessions = [dict(row) for row in rows]
+                            rows = cur.execute("""
+                                SELECT id, title, model, started_at, message_count, tool_call_count,
+                                       input_tokens, output_tokens, cache_read_tokens, estimated_cost_usd 
+                                FROM sessions ORDER BY started_at DESC
+                            """).fetchall()
+                            for r in rows:
+                                rd = dict(r)
+                                seen_ids.add(rd["id"])
+                                collected_sessions.append(rd)
+                                sess_count += 1
+                                tokens_in += rd.get("input_tokens") or 0
+                                tokens_out += rd.get("output_tokens") or 0
+                                cache_read += rd.get("cache_read_tokens") or 0
+                                cost_usd += rd.get("estimated_cost_usd") or 0.0
+                                msg_count += rd.get("message_count") or 0
                 except Exception:
                     pass
 
-            # 3. Check default DB for any sessions matching profile_name = p_id
-            main_conn = self._get_ro_conn()
-            if main_conn:
-                try:
-                    with main_conn:
-                        m_cur = main_conn.cursor()
-                        m_rows = m_cur.execute("""
-                            SELECT id, title, model, started_at, message_count, input_tokens, output_tokens, estimated_cost_usd
-                            FROM sessions 
-                            WHERE profile_name = ?
-                            ORDER BY started_at DESC LIMIT 5
-                        """, (p_id,)).fetchall()
-                        if m_rows:
-                            sess_count += len(m_rows)
-                            for mr in m_rows:
-                                mr_dict = dict(mr)
-                                tokens_in += mr_dict.get("input_tokens") or 0
-                                tokens_out += mr_dict.get("output_tokens") or 0
-                                recent_sessions.insert(0, mr_dict)
-                except Exception:
-                    pass
+            # 3. Collect attributed sessions & subagents from main database
+            for s in all_main_sessions:
+                if s["id"] in seen_ids:
+                    continue
+                # Match either exact profile_name or attributed persona
+                if s.get("profile_name") == p_id or self.attribute_session_persona(s) == p_id:
+                    seen_ids.add(s["id"])
+                    collected_sessions.append(s)
+                    sess_count += 1
+                    tokens_in += s.get("input_tokens") or 0
+                    tokens_out += s.get("output_tokens") or 0
+                    cache_read += s.get("cache_read_tokens") or 0
+                    cost_usd += s.get("estimated_cost_usd") or 0.0
+                    msg_count += s.get("message_count") or 0
+
+            # Sort collected sessions by started_at desc
+            collected_sessions.sort(key=lambda x: x.get("started_at") or 0, reverse=True)
 
             # 4. Count specialized skills
-            p_skills_dir = p_dir / "skills"
-            skills_count = len(list(p_skills_dir.rglob("SKILL.md"))) if p_skills_dir.exists() else 0
+            p_skills_dir = p_dir / "skills" if p_dir.exists() else None
+            skills_count = len(list(p_skills_dir.rglob("SKILL.md"))) if p_skills_dir and p_skills_dir.exists() else 0
 
             # 5. Memory & User profile sizes
-            p_mem_file = p_dir / "MEMORY.md"
-            p_user_file = p_dir / "USER.md"
-            mem_chars = len(p_mem_file.read_text(encoding="utf-8")) if p_mem_file.exists() else 0
-            user_chars = len(p_user_file.read_text(encoding="utf-8")) if p_user_file.exists() else 0
+            p_mem_file = p_dir / "MEMORY.md" if p_dir.exists() else None
+            p_user_file = p_dir / "USER.md" if p_dir.exists() else None
+            mem_chars = len(p_mem_file.read_text(encoding="utf-8")) if p_mem_file and p_mem_file.exists() else 0
+            user_chars = len(p_user_file.read_text(encoding="utf-8")) if p_user_file and p_user_file.exists() else 0
 
             agent_profiles.append({
                 "id": p_id,
@@ -1059,7 +1173,8 @@ class HermesReader:
                 "memory_chars": mem_chars,
                 "user_chars": user_chars,
                 "has_soul": bool(soul_content),
-                "recent_sessions": recent_sessions[:5],
+                "recent_sessions": collected_sessions[:5],
+                "_all_sessions": collected_sessions,
             })
 
         return agent_profiles
@@ -1071,26 +1186,29 @@ class HermesReader:
         if not summary:
             return None
 
+        # Extract collected sessions from summary cache
+        all_sessions = summary.pop("_all_sessions", [])
+
         p_dir = HERMES_DIR / "profiles" / profile_id
         import yaml
 
-        soul_file = p_dir / "SOUL.md"
-        soul_raw = soul_file.read_text(encoding="utf-8") if soul_file.exists() else ""
+        soul_file = p_dir / "SOUL.md" if p_dir.exists() else None
+        soul_raw = soul_file.read_text(encoding="utf-8") if soul_file and soul_file.exists() else ""
 
-        mem_file = p_dir / "MEMORY.md"
-        mem_raw = mem_file.read_text(encoding="utf-8") if mem_file.exists() else ""
+        mem_file = p_dir / "MEMORY.md" if p_dir.exists() else None
+        mem_raw = mem_file.read_text(encoding="utf-8") if mem_file and mem_file.exists() else ""
 
-        user_file = p_dir / "USER.md"
-        user_raw = user_file.read_text(encoding="utf-8") if user_file.exists() else ""
+        user_file = p_dir / "USER.md" if p_dir.exists() else None
+        user_raw = user_file.read_text(encoding="utf-8") if user_file and user_file.exists() else ""
 
-        conf_file = p_dir / "config.yaml"
-        conf_raw = conf_file.read_text(encoding="utf-8") if conf_file.exists() else ""
+        conf_file = p_dir / "config.yaml" if p_dir.exists() else None
+        conf_raw = conf_file.read_text(encoding="utf-8") if conf_file and conf_file.exists() else ""
         conf_data = yaml.safe_load(conf_raw) if conf_raw else {}
 
         # Profile skills
         skills_list = []
-        p_skills_dir = p_dir / "skills"
-        if p_skills_dir.exists():
+        p_skills_dir = p_dir / "skills" if p_dir.exists() else None
+        if p_skills_dir and p_skills_dir.exists():
             for sk_path in p_skills_dir.rglob("SKILL.md"):
                 try:
                     sk_content = sk_path.read_text(encoding="utf-8")
@@ -1108,32 +1226,10 @@ class HermesReader:
                 except Exception:
                     pass
 
-        # Full session list
-        p_db = p_dir / "state.db"
-        all_sessions = []
-        if p_db.exists():
-            try:
-                conn = sqlite3.connect(f"file:{p_db}?mode=ro", uri=True)
-                conn.row_factory = sqlite3.Row
-                with conn:
-                    cur = conn.cursor()
-                    tables = [r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-                    if "sessions" in tables:
-                        rows = cur.execute("""
-                            SELECT id, title, model, started_at, ended_at, message_count, 
-                                   tool_call_count, input_tokens, output_tokens, cache_read_tokens, 
-                                   estimated_cost_usd, git_branch
-                            FROM sessions 
-                            ORDER BY started_at DESC
-                        """).fetchall()
-                        all_sessions = [dict(r) for r in rows]
-            except Exception:
-                pass
-
         # Cron jobs
         cron_list = []
-        p_cron_dir = p_dir / "cron"
-        if p_cron_dir.exists():
+        p_cron_dir = p_dir / "cron" if p_dir.exists() else None
+        if p_cron_dir and p_cron_dir.exists():
             for cf in p_cron_dir.glob("*.json"):
                 try:
                     cdata = json.loads(cf.read_text(encoding="utf-8"))
