@@ -240,15 +240,17 @@ class HermesReader:
                 sid = item.get("id")
                 item["session_id"] = sid
 
-                # Hydrate missing title for subagents from first message
-                if not item.get("title") and (item.get("source") == "subagent" or item.get("parent_session_id")):
-                    try:
-                        msg_row = cur.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id ASC LIMIT 1", (sid,)).fetchone()
-                        if msg_row and msg_row[0]:
+                # Hydrate missing or generic title from first user message
+                try:
+                    msg_row = cur.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id ASC LIMIT 1", (sid,)).fetchone()
+                    if msg_row and msg_row[0]:
+                        item["first_prompt"] = msg_row[0]
+                        if not item.get("title") or item.get("title").startswith("[Workspace::v1:"):
                             item["title"] = msg_row[0][:80].replace("\n", " ").strip()
-                        else:
-                            item["title"] = f"Subagent Task ({sid})"
-                    except Exception:
+                    elif not item.get("title") and (item.get("source") == "subagent" or item.get("parent_session_id")):
+                        item["title"] = f"Subagent Task ({sid})"
+                except Exception:
+                    if not item.get("title") and (item.get("source") == "subagent" or item.get("parent_session_id")):
                         item["title"] = f"Subagent Task ({sid})"
 
                 # Tag persona
@@ -975,9 +977,9 @@ class HermesReader:
         if prof in self.ROSTER_META:
             return prof
 
-        # 2. Textual persona mentions in title, goal, context, cwd, or custom notes
-        text = f"{session.get('title') or ''} {session.get('goal') or ''} {session.get('context') or ''} {session.get('cwd') or ''}".lower()
-        if "@owl" in text or "owl:" in text or "🦉" in text:
+        # 2. Textual persona mentions in title, goal, context, cwd, custom notes, or first prompt
+        text = f"{session.get('title') or ''} {session.get('goal') or ''} {session.get('context') or ''} {session.get('cwd') or ''} {session.get('first_prompt') or ''}".lower()
+        if "@owl" in text or "owl:" in text or "🦉" in text or "pantheon-swarm" in text or "pantheon swarm" in text or "/pantheon-swarm" in text:
             return "owl"
         if "@rabbit" in text or "rabbit:" in text or "🐰" in text:
             return "rabbit"
@@ -1054,13 +1056,16 @@ class HermesReader:
                     """).fetchall()
                     for row in rows:
                         s_dict = dict(row)
-                        # Hydrate title from first message if missing for subagent
-                        if not s_dict.get("title") and (s_dict.get("source") == "subagent" or s_dict.get("parent_session_id")):
+                        try:
                             msg_row = m_cur.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id ASC LIMIT 1", (s_dict["id"],)).fetchone()
                             if msg_row and msg_row[0]:
-                                s_dict["title"] = msg_row[0][:80].replace("\n", " ").strip()
-                            else:
+                                s_dict["first_prompt"] = msg_row[0]
+                                if not s_dict.get("title") or s_dict.get("title").startswith("[Workspace::v1:"):
+                                    s_dict["title"] = msg_row[0][:80].replace("\n", " ").strip()
+                            elif not s_dict.get("title") and (s_dict.get("source") == "subagent" or s_dict.get("parent_session_id")):
                                 s_dict["title"] = f"Subagent Task ({s_dict['id']})"
+                        except Exception:
+                            pass
                         all_main_sessions.append(s_dict)
             except Exception:
                 pass
