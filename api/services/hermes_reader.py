@@ -913,10 +913,18 @@ class HermesReader:
         "tigger": {
             "name": "Tigger",
             "emoji": "🐯",
-            "role": "DevOps & Systems Executor",
-            "domain": "Isolated git worktrees, hands-on coding, test suite execution, fast build loops",
-            "default_model": "qwen3.8-flash-next:262k",
+            "role": "DevOps & Systems Executor (Local Swarm)",
+            "domain": "High-speed test-driven implementation, boilerplate scaffolding, code generation (MTP=4, 4-6 slots on chunkito)",
+            "default_model": "qwen3.8-27b",
             "accent_color": "amber",
+        },
+        "jagular": {
+            "name": "Jagular",
+            "emoji": "🐆",
+            "role": "The Deep Hunter & Big Iron Forensics",
+            "domain": "Monster-context debugging (>50k–200k+ tokens), whole-repo architectural forensics, deep synthesis (chunkito Strix Halo)",
+            "default_model": "qwen3.8-flash-next:262k",
+            "accent_color": "orange",
         },
         "piglet": {
             "name": "Piglet",
@@ -973,6 +981,8 @@ class HermesReader:
             return "owl"
         if "@rabbit" in text or "rabbit:" in text or "🐰" in text:
             return "rabbit"
+        if "@jagular" in text or "jagular:" in text or "🐆" in text:
+            return "jagular"
         if "@tigger" in text or "tigger:" in text or "🐯" in text:
             return "tigger"
         if "@piglet" in text or "piglet:" in text or "🐷" in text:
@@ -1005,7 +1015,11 @@ class HermesReader:
                 return "rabbit"
             elif "qwen3-coder" in model:
                 return "coder"
-            elif "qwen3.8-flash-next" in model or "chunkito" in provider or "chunkito" in model:
+            elif "qwen3.8-flash-next" in model:
+                if re.search(r'\b(vault|gardener|gardening|curat|curating|wikilink|runbook)\b', text, re.IGNORECASE):
+                    return "pooh"
+                return "jagular"
+            elif "qwen3.8-27b" in model or "qwen3.8" in model or "chunkito" in provider or "chunkito" in model:
                 if re.search(r'\b(vault|gardener|gardening|curat|curating|wikilink|runbook)\b', text, re.IGNORECASE):
                     return "pooh"
                 return "tigger"
