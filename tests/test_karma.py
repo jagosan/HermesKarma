@@ -717,6 +717,23 @@ class TestHermesKarma(unittest.TestCase):
         }
         self.assertEqual(hermes_reader.attribute_session_persona(jagular_named), "jagular")
 
+        # Top-level session with pantheon-swarm command -> Owl
+        owl_swarm = {
+            "title": "[Workspace::v1: /home/jagosan/repos/playground]",
+            "source": "webui",
+            "model": "gemini-3.8-flash",
+            "first_prompt": "/pantheon-swarm specs/01-playground-lobby.md"
+        }
+        self.assertEqual(hermes_reader.attribute_session_persona(owl_swarm), "owl")
+
+        # Subagent for Rabbit delegation -> Rabbit
+        rabbit_sub = {
+            "title": "@rabbit: Decompose specs/01-playground-lobby.md into Kanban tasks",
+            "source": "subagent",
+            "model": "hf.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:UD-IQ2_M"
+        }
+        self.assertEqual(hermes_reader.attribute_session_persona(rabbit_sub), "rabbit")
+
         # Subagent with ERNIE -> Eeyore
         eeyore_sub = {
             "title": "Security audit",
