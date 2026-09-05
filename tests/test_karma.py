@@ -643,16 +643,26 @@ class TestHermesKarma(unittest.TestCase):
         data = res.json()
         self.assertIn("summary", data)
         self.assertIn("profiles", data)
-        self.assertGreaterEqual(data["summary"]["total_agents"], 8)
+        self.assertGreaterEqual(data["summary"]["total_agents"], 9)
         
         profile_ids = [p["id"] for p in data["profiles"]]
-        for required_id in ["owl", "rabbit", "tigger", "piglet", "eeyore", "pooh", "coder", "ingest"]:
+        for required_id in ["owl", "rabbit", "tigger", "jagular", "piglet", "eeyore", "pooh", "coder", "ingest"]:
             self.assertIn(required_id, profile_ids)
             
         owl = next(p for p in data["profiles"] if p["id"] == "owl")
         self.assertEqual(owl["emoji"], "🦉")
         self.assertEqual(owl["name"], "Owl")
         self.assertIn("model", owl)
+
+        jagular = next(p for p in data["profiles"] if p["id"] == "jagular")
+        self.assertEqual(jagular["emoji"], "🐆")
+        self.assertEqual(jagular["name"], "Jagular")
+        self.assertEqual(jagular["model"], "qwen3.8-flash-next:262k")
+
+        tigger = next(p for p in data["profiles"] if p["id"] == "tigger")
+        self.assertEqual(tigger["emoji"], "🐯")
+        self.assertEqual(tigger["name"], "Tigger")
+        self.assertEqual(tigger["model"], "qwen3.8-27b")
 
     def test_pantheon_profile_detail_endpoint(self):
         res = self.client.get("/api/pantheon/profiles/owl")
@@ -663,6 +673,16 @@ class TestHermesKarma(unittest.TestCase):
         self.assertIn("skills", data)
         self.assertIn("sessions", data)
         self.assertTrue(len(data["soul_raw"]) > 0)
+
+        # Test Jagular detail endpoint
+        res_jag = self.client.get("/api/pantheon/profiles/jagular")
+        self.assertEqual(res_jag.status_code, 200)
+        data_jag = res_jag.json()
+        self.assertEqual(data_jag["id"], "jagular")
+        self.assertEqual(data_jag["name"], "Jagular")
+        self.assertEqual(data_jag["emoji"], "🐆")
+        self.assertEqual(data_jag["model"], "qwen3.8-flash-next:262k")
+        self.assertTrue(len(data_jag["soul_raw"]) > 0)
         
         # Test 404 for unknown profile
         res_404 = self.client.get("/api/pantheon/profiles/nonexistent_agent_xyz")
@@ -670,14 +690,32 @@ class TestHermesKarma(unittest.TestCase):
 
     def test_persona_attribution_and_subagents(self):
         """Test attribution helper and sessions persona filtering."""
-        # Subagent with qwen on chunkito -> Tigger
+        # Subagent with qwen3.8-27b on chunkito -> Tigger
         tigger_sub = {
             "title": "Implement Vocabulous endpoints",
+            "source": "subagent",
+            "model": "qwen3.8-27b",
+            "billing_provider": "chunkito"
+        }
+        self.assertEqual(hermes_reader.attribute_session_persona(tigger_sub), "tigger")
+
+        # Subagent with qwen3.8-flash-next on chunkito -> Jagular
+        jagular_sub = {
+            "title": "Whole-repo architectural forensics",
             "source": "subagent",
             "model": "qwen3.8-flash-next:262k",
             "billing_provider": "chunkito"
         }
-        self.assertEqual(hermes_reader.attribute_session_persona(tigger_sub), "tigger")
+        self.assertEqual(hermes_reader.attribute_session_persona(jagular_sub), "jagular")
+
+        # Explicit mention overrides model
+        jagular_named = {
+            "title": "Summoning @jagular for deep hunt",
+            "source": "subagent",
+            "model": "qwen3.8-27b",
+            "billing_provider": "chunkito"
+        }
+        self.assertEqual(hermes_reader.attribute_session_persona(jagular_named), "jagular")
 
         # Subagent with ERNIE -> Eeyore
         eeyore_sub = {

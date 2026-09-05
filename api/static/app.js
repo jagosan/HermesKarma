@@ -670,10 +670,13 @@ async function loadPantheon() {
     const summ = data.summary || {};
 
     const kpiAgents = document.getElementById('pantheonKpiAgents');
-    if (kpiAgents) kpiAgents.innerText = `${summ.total_agents || 8} Agents`;
+    if (kpiAgents) kpiAgents.innerText = `${summ.total_agents || 9} Agents`;
+
+    const headerBadge = document.getElementById('pantheonHeaderBadge');
+    if (headerBadge) headerBadge.innerText = `${summ.total_agents || 9} Autonomous Specialists`;
 
     const kpiLocal = document.getElementById('pantheonKpiLocal');
-    if (kpiLocal) kpiLocal.innerText = `${summ.local_agents || 7} APU/Local • ${summ.cloud_agents || 1} Cloud`;
+    if (kpiLocal) kpiLocal.innerText = `${summ.local_agents || 8} APU/Local • ${summ.cloud_agents || 1} Cloud`;
 
     const kpiSessions = document.getElementById('pantheonKpiSessions');
     if (kpiSessions) kpiSessions.innerText = `${(summ.total_sessions || 0).toLocaleString()} Sessions`;
