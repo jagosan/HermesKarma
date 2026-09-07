@@ -599,6 +599,28 @@ class NodeTelemetryCollector:
             target_host = tailscale_ip or host
             inf_res = await self._query_ollama_endpoint(target_host, ollama_port, timeout_sec=3.0)
 
+            # Check if Prometheus Node Exporter is running on target_host (port 9100)
+            remote_metrics = {}
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    resp = await client.get(f"http://{target_host}:9100/metrics")
+                    if resp.status_code == 200:
+                        for line in resp.text.splitlines():
+                            if line.startswith("amdgpu_busy_percent"):
+                                parts = line.split()
+                                if len(parts) >= 2:
+                                    remote_metrics["gpu_busy_percent"] = int(float(parts[1]))
+                            elif line.startswith("amdgpu_gtt_used_bytes"):
+                                parts = line.split()
+                                if len(parts) >= 2:
+                                    remote_metrics["gtt_used_gb"] = round(float(parts[1]) / (1024**3), 2)
+                            elif line.startswith("amdgpu_gtt_total_bytes"):
+                                parts = line.split()
+                                if len(parts) >= 2:
+                                    remote_metrics["gtt_total_gb"] = round(float(parts[1]) / (1024**3), 2)
+            except Exception:
+                pass
+
             if inf_res.get("reachable"):
                 telemetry["status"] = "online"
                 telemetry["latency_ms"] = inf_res.get("latency_ms")
@@ -634,16 +656,23 @@ class NodeTelemetryCollector:
                 telemetry["apu_vram"]["used_percent"] = vram_used_pct
 
                 # Remote AMDGPU & hardware telemetry structure for chunkito Strix Halo
+                gpu_busy_val = remote_metrics.get(
+                    "gpu_busy_percent",
+                    25 if inf_res.get("slot_summary", {}).get("active_slots", 0) > 0 else 0
+                )
+                gtt_used_val = remote_metrics.get("gtt_used_gb", round(total_vram_used_gb, 2))
+                gtt_total_val = remote_metrics.get("gtt_total_gb", round(hardware.get("gtt_size_mb", 120832) / 1024.0, 1))
+
                 telemetry["amdgpu"] = {
                     "available": True,
-                    "gpu_busy_percent": 25 if inf_res.get("slot_summary", {}).get("active_slots", 0) > 0 else 0,
+                    "gpu_busy_percent": gpu_busy_val,
                     "vram_total_gb": vram_total_gb,
                     "vram_used_gb": round(total_vram_used_gb, 2),
                     "vram_free_gb": round(free_vram_gb, 2),
                     "vram_used_percent": vram_used_pct,
-                    "gtt_total_gb": round(hardware.get("gtt_size_mb", 120832) / 1024.0, 1),
-                    "gtt_used_gb": round(total_vram_used_gb, 2),
-                    "power_w": 45.0 if inf_res.get("slot_summary", {}).get("active_slots", 0) > 0 else 18.5,
+                    "gtt_total_gb": gtt_total_val,
+                    "gtt_used_gb": gtt_used_val,
+                    "power_w": 45.0 if gpu_busy_val > 0 else 18.5,
                     "temperature_c": 38.5,
                     "device_path": "AMD Radeon 8060S (Strix Halo gfx1150 / RDNA 3.5)",
                 }
