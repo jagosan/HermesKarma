@@ -162,7 +162,7 @@ class HermesReader:
             return "Google Gemini"
         elif "claude" in m or "sonnet" in m or "opus" in m:
             return "Anthropic Claude"
-        elif "chunkito" in m or "qwen3.8" in m:
+        elif "chunkito" in m or "qwen3.8" in m or "qwen3-coder" in m:
             return "Chunkito APU"
         elif "deepseek" in m:
             return "Chunkito / Local"
@@ -1040,15 +1040,15 @@ class HermesReader:
             "name": "Tigger",
             "emoji": "🐯",
             "role": "DevOps & Systems Executor (Local Swarm)",
-            "domain": "High-speed test-driven implementation, boilerplate scaffolding, code generation (MTP=4, 4-6 slots on chunkito)",
-            "default_model": "qwen3.8-27b",
+            "domain": "High-speed test-driven implementation, boilerplate scaffolding, code generation (12 slots w/ native 256k on chunkito)",
+            "default_model": "qwen3-coder-30b:262k",
             "accent_color": "amber",
         },
         "jagular": {
             "name": "Jagular",
             "emoji": "🐆",
-            "role": "The Deep Hunter & Big Iron Forensics",
-            "domain": "Monster-context debugging (>50k–200k+ tokens), whole-repo architectural forensics, deep synthesis (chunkito Strix Halo)",
+            "role": "The Beast & Big Iron Forensics (Sole Hunter)",
+            "domain": "Monster-context whole-repo architectural forensics (>50k–262k tokens, Qwen3.8-Flash-Next 177B on chunkito; requires mutual exclusion vacate protocol)",
             "default_model": "qwen3.8-flash-next:262k",
             "accent_color": "orange",
         },
@@ -1064,16 +1064,16 @@ class HermesReader:
             "name": "Eeyore",
             "emoji": "🫏",
             "role": "Safety Officer & Adversarial Auditor",
-            "domain": "Pre-commit security audits, permission leakage, secret exposure, network partition resilience",
-            "default_model": "hf.co/unsloth/ERNIE-4.5-21B-A3B-Thinking-GGUF:Q4_K_M",
+            "domain": "Pre-commit security audits, permission leakage, secret exposure, adversarial failure modes",
+            "default_model": "qwen3-coder-30b:262k",
             "accent_color": "indigo",
         },
         "pooh": {
             "name": "Pooh",
             "emoji": "🐻",
             "role": "Knowledge Gardener & Vault Curator",
-            "domain": "Obsidian vault curation, runbook gardening, wikilinks indexing, daily logs",
-            "default_model": "qwen3.8-flash-next:262k",
+            "domain": "Obsidian vault curation, runbook gardening, wikilinks indexing, daily logs (Chunkito 256k)",
+            "default_model": "qwen3-coder-30b:262k",
             "accent_color": "amber",
         },
         "coder": {
@@ -1081,7 +1081,7 @@ class HermesReader:
             "emoji": "💻",
             "role": "Autonomous Software Engineer",
             "domain": "Full-stack feature engineering, test-driven development, deep debugging, refactoring",
-            "default_model": "qwen3-coder-next:q8_0",
+            "default_model": "qwen3-coder-30b:262k",
             "accent_color": "blue",
         },
         "ingest": {
@@ -1089,7 +1089,7 @@ class HermesReader:
             "emoji": "📥",
             "role": "Knowledge Ingest & Article Synthesizer",
             "domain": "Web extraction, PDF document synthesis, cognitive graph enrichment, note capture",
-            "default_model": "qwen3-coder-next:q8_0",
+            "default_model": "qwen3-coder-30b:262k",
             "accent_color": "teal",
         },
     }
