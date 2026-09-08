@@ -417,6 +417,13 @@ class NodeTelemetryCollector:
                         parsed_models = []
                         for itm in items:
                             mid = itm.get("id") or itm.get("name")
+                            aliases = itm.get("aliases", [])
+                            # Prefer canonical model names over backwards-compatibility aliases (e.g. qwen3.8-flash-next over qwen3.8-27b)
+                            for canon in ["qwen3.8-flash-next:262k", "qwen3.8-flash-next", "deepseek-v4:96k", "deepseek-v4"]:
+                                if canon in aliases:
+                                    mid = canon
+                                    break
+
                             meta = itm.get("meta", {})
                             size_bytes = meta.get("size", 0)
                             size_gb = round(size_bytes / (1024**3), 2) if size_bytes else 0.0
