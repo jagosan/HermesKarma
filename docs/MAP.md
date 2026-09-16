@@ -8,11 +8,15 @@
   - `get_session_by_id(session_id)` -> Dict (Session details, subagents, model usages)
   - `get_session_messages(session_id)` -> List[Dict]
   - `get_session_timeline(session_id)` -> List[Dict]
-  - `get_analytics_overview(time_range)` -> Dict
+  - `get_analytics_overview(time_range)` -> Dict (Includes dynamic cost reconciliation and monthly cap)
+- `pricing_engine.py`: `PricingEngine`
+  - `get_model_pricing(model_name, billing_provider)` -> Optional[ModelPricing]
+  - `calculate_usage_cost(model, input, output, cache_read, cache_write, reasoning, stored_cost)` -> UsageCostEstimate
+  - `is_local_model(model_name, billing_provider)` -> bool
 - `live_tracker.py`: `LiveTracker`
   - `get_live_sessions()` -> List[Dict] (Active hooks, live delegations, live subagents)
   - `stream_live_events(interval)` -> AsyncGenerator (SSE emitter for live sessions & fleet)
-- `node_collector.py`: `NodeTelemetryCollector` (Sysfs/APU telemetry for Chunkito/Beehive)
+- `node_collector.py`: `NodeTelemetryCollector` (Sysfs/APU & Prometheus node_exporter telemetry for Chunkito/Beehive)
 - `metadata_service.py`: `MetadataService` (Tags, notes, ticket sync SQLite storage)
 
 ## REST API Routes (`api/routes/`)
@@ -26,10 +30,16 @@
   - `GET /api/live-sessions`: Active sessions snapshot
   - `GET /api/live-sessions/stream`: SSE live stream
 - `analytics.py`:
-  - `GET /api/analytics/overview`: High-precision multi-model token & cost analytics
+  - `GET /api/analytics/overview`: High-precision multi-model token & reconciled cost analytics
+- `nodes.py`:
+  - `GET /api/nodes`: Multi-node cluster telemetry with Prometheus & APU hardware metrics
 
-## Frontend DOM Elements (`api/static/index.html` & `app.js`)
+## Frontend DOM Elements & Components (`api/static/index.html` & `app.js`)
 - `#tab-pantheon`, `#view-pantheon`: Pantheon Swarm multi-agent grid & detail drawer
 - `#tab-sessions`, `#view-sessions`: Sessions list, subagent badges, filter dropdowns
 - `#tab-live`, `#view-live`: Live running sessions & subagent cards
 - `#tab-analytics`, `#view-analytics`: Cost & token distribution charts
+- `#tab-nodes`, `#view-nodes`: Fleet APU nodes view
+- `renderInstrumentCluster(node)`: SVG automotive instrument cluster component (dual primary tach/speedo dials, outer wing temp/power gauges, telltales, digital odometer)
+- `#statTotalCost`, `#statSpendCap`: Reconciled spend card and monthly spend cap indicators
+- `#table-model-breakdown`: Multi-model usage table with reconciled badges

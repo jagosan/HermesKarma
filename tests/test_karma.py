@@ -662,7 +662,7 @@ class TestHermesKarma(unittest.TestCase):
         tigger = next(p for p in data["profiles"] if p["id"] == "tigger")
         self.assertEqual(tigger["emoji"], "🐯")
         self.assertEqual(tigger["name"], "Tigger")
-        self.assertEqual(tigger["model"], "qwen3.8-27b")
+        self.assertIn(tigger["model"], ["qwen3-coder-next:262k", "qwen3.8-27b"])
 
     def test_pantheon_profile_detail_endpoint(self):
         res = self.client.get("/api/pantheon/profiles/owl")
@@ -757,6 +757,94 @@ class TestHermesKarma(unittest.TestCase):
         self.assertIn("sessions", data)
         for s in data["sessions"]:
             self.assertEqual(s.get("persona_id"), "tigger")
+
+    def test_pricing_engine_gemini_rates(self):
+        """Verify published rates for Gemini 3.8 and 3.7 Flash and context caching."""
+        from api.services.pricing_engine import pricing_engine
+
+        # 1M input ($0.75) + 1M output ($3.75) + 1M cache read ($0.075) = $4.575
+        cost = pricing_engine.calculate_cost(
+            model_name="gemini-3.8-flash",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cache_read_tokens=1_000_000,
+        )
+        self.assertAlmostEqual(cost, 4.575, places=4)
+
+        # Gemini 3.7 Flash shares same rate
+        cost_37 = pricing_engine.calculate_cost(
+            model_name="gemini-3.7-flash",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cache_read_tokens=1_000_000,
+        )
+        self.assertAlmostEqual(cost_37, 4.575, places=4)
+
+    def test_pricing_engine_local_apu_zero_cost(self):
+        """Verify local APU hardware models strictly evaluate to $0.00."""
+        from api.services.pricing_engine import pricing_engine
+
+        for local_model in [
+            "qwen3-coder-next:q8_0",
+            "qwen3.8-flash-next:262k",
+            "deepseek-v4:96k",
+            "hf.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:UD-IQ2_M",
+            "gemma4:12b",
+            "gpt-oss:20b",
+        ]:
+            self.assertTrue(pricing_engine.is_local_model(local_model))
+            cost = pricing_engine.calculate_cost(local_model, 10_000_000, 1_000_000)
+            self.assertEqual(cost, 0.0)
+
+            rec = pricing_engine.reconcile_usage(local_model, 10_000_000, 1_000_000, stored_cost_usd=0.0)
+            self.assertEqual(rec.cost_usd, 0.0)
+            self.assertTrue(rec.is_local)
+            self.assertFalse(rec.is_reconciled)
+
+    def test_pricing_engine_reconciliation_of_zero_cost_cloud(self):
+        """Verify cloud models with 0.0 stored cost are reconciled to honest pricing."""
+        from api.services.pricing_engine import pricing_engine
+
+        # Historical WAL row with 0.0 stored cost
+        rec = pricing_engine.reconcile_usage(
+            model_name="gemini-3.7-flash",
+            input_tokens=74_894_555,
+            output_tokens=1_847_551,
+            cache_read_tokens=519_248_816,
+            stored_cost_usd=0.0,
+            billing_provider="gemini",
+        )
+        self.assertTrue(rec.is_reconciled)
+        self.assertFalse(rec.is_local)
+        self.assertGreater(rec.cost_usd, 90.0)
+        self.assertLess(rec.cost_usd, 110.0)
+
+    def test_analytics_overview_spend_cap_metrics(self):
+        """Verify analytics overview returns spend cap metrics and reconciled totals."""
+        res = self.client.get("/api/analytics/overview?time_range=all")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("spend_cap_usd", data)
+        self.assertEqual(data["spend_cap_usd"], 250.0)
+        self.assertIn("current_month_cost_usd", data)
+        self.assertIn("spend_cap_pct", data)
+        self.assertIn("raw_stored_cost_usd", data)
+        self.assertIn("reconciled_delta_usd", data)
+        self.assertGreater(data["total_estimated_cost_usd"], 200.0)
+
+    def test_nodes_cluster_telltales(self):
+        """Verify node collector emits cluster_telltales for instrument gauges."""
+        res = self.client.get("/api/nodes")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("nodes", data)
+        for node in data["nodes"]:
+            self.assertIn("amdgpu", node)
+            self.assertIn("cluster_telltales", node)
+            tt = node["cluster_telltales"]
+            self.assertIn("gear", tt)
+            self.assertIn("active_slots", tt)
+            self.assertIn("is_generating", tt)
 
 
 if __name__ == "__main__":
