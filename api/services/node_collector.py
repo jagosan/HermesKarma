@@ -601,6 +601,19 @@ class NodeTelemetryCollector:
                     telemetry["inference_engine"]["overloaded"] = True
                     telemetry["ollama"]["overloaded"] = True
                     telemetry["alerts"].append(f"Model limit exceeded ({loaded_cnt}/{max_loaded})")
+
+            # Local cluster telltales
+            active_slots_local = telemetry["inference_engine"].get("slot_summary", {}).get("active_slots", 0)
+            busy_pct = telemetry["amdgpu"].get("gpu_busy_percent", 0)
+            telemetry["cluster_telltales"] = {
+                "gear": "D" if active_slots_local > 0 or busy_pct > 5 else "P",
+                "active_slots": active_slots_local,
+                "total_slots": telemetry["inference_engine"].get("slot_summary", {}).get("total_slots", 1),
+                "is_generating": active_slots_local > 0 or busy_pct > 10,
+                "is_throttled": telemetry["amdgpu"].get("temperature_c", 0) > 85.0,
+                "oom_alert": False,
+                "tailscale_online": True,
+            }
         else:
             # Remote node (e.g. chunkito AMD APU node over Tailscale)
             target_host = tailscale_ip or host
@@ -613,18 +626,30 @@ class NodeTelemetryCollector:
                     resp = await client.get(f"http://{target_host}:9100/metrics")
                     if resp.status_code == 200:
                         for line in resp.text.splitlines():
-                            if line.startswith("amdgpu_busy_percent"):
-                                parts = line.split()
-                                if len(parts) >= 2:
-                                    remote_metrics["gpu_busy_percent"] = int(float(parts[1]))
-                            elif line.startswith("amdgpu_gtt_used_bytes"):
-                                parts = line.split()
-                                if len(parts) >= 2:
-                                    remote_metrics["gtt_used_gb"] = round(float(parts[1]) / (1024**3), 2)
-                            elif line.startswith("amdgpu_gtt_total_bytes"):
-                                parts = line.split()
-                                if len(parts) >= 2:
-                                    remote_metrics["gtt_total_gb"] = round(float(parts[1]) / (1024**3), 2)
+                            if line.startswith("#"):
+                                continue
+                            parts = line.split()
+                            if len(parts) != 2:
+                                continue
+                            name, val = parts[0], parts[1]
+                            try:
+                                fval = float(val)
+                            except Exception:
+                                continue
+                            if name.startswith("amdgpu_busy_percent"):
+                                remote_metrics["gpu_busy_percent"] = int(fval)
+                            elif name.startswith("amdgpu_gtt_used_bytes"):
+                                remote_metrics["gtt_used_gb"] = round(fval / (1024**3), 2)
+                            elif name.startswith("amdgpu_gtt_total_bytes"):
+                                remote_metrics["gtt_total_gb"] = round(fval / (1024**3), 2)
+                            elif "node_hwmon_power_average_watt" in name and "power1" in name:
+                                remote_metrics["power_w"] = round(fval, 1)
+                            elif "node_hwmon_temp_celsius" in name and "0000:00:08_1" in name and "temp1" in name:
+                                remote_metrics["gpu_temp_c"] = round(fval, 1)
+                            elif name.startswith("node_cooling_device_cur_state") and int(fval) > 0:
+                                remote_metrics["is_throttled"] = True
+                            elif name.startswith("node_vmstat_oom_kill"):
+                                remote_metrics["oom_kills"] = int(fval)
             except Exception:
                 pass
 
@@ -670,6 +695,16 @@ class NodeTelemetryCollector:
                 gtt_used_val = remote_metrics.get("gtt_used_gb", round(total_vram_used_gb, 2))
                 gtt_total_val = remote_metrics.get("gtt_total_gb", round(hardware.get("gtt_size_mb", 120832) / 1024.0, 1))
 
+                power_val = remote_metrics.get("power_w")
+                if power_val is None:
+                    power_val = 45.0 if gpu_busy_val > 0 else 18.5
+                temp_val = remote_metrics.get("gpu_temp_c")
+                if temp_val is None:
+                    temp_val = 38.5
+
+                is_throttled = remote_metrics.get("is_throttled", False)
+                oom_kills = remote_metrics.get("oom_kills", 0)
+
                 telemetry["amdgpu"] = {
                     "available": True,
                     "gpu_busy_percent": gpu_busy_val,
@@ -679,9 +714,22 @@ class NodeTelemetryCollector:
                     "vram_used_percent": vram_used_pct,
                     "gtt_total_gb": gtt_total_val,
                     "gtt_used_gb": gtt_used_val,
-                    "power_w": 45.0 if gpu_busy_val > 0 else 18.5,
-                    "temperature_c": 38.5,
-                    "device_path": "AMD Radeon 8060S (Strix Halo gfx1150 / RDNA 3.5)",
+                    "power_w": power_val,
+                    "temperature_c": temp_val,
+                    "is_throttled": is_throttled,
+                    "oom_kills": oom_kills,
+                    "device_path": "AMD Radeon 8060S (Strix Halo gfx1151 / RDNA 3.5)",
+                }
+
+                active_slots_cnt = inf_res.get("slot_summary", {}).get("active_slots", 0)
+                telemetry["cluster_telltales"] = {
+                    "gear": "D" if active_slots_cnt > 0 or gpu_busy_val > 5 else "P",
+                    "active_slots": active_slots_cnt,
+                    "total_slots": inf_res.get("slot_summary", {}).get("total_slots", 1),
+                    "is_generating": active_slots_cnt > 0 or gpu_busy_val > 10,
+                    "is_throttled": is_throttled or temp_val > 85.0,
+                    "oom_alert": oom_kills > 0,
+                    "tailscale_online": True,
                 }
 
                 # OOM prevention check (e.g. chunkito requirement: max loaded = 1)
