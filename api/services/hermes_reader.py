@@ -20,6 +20,7 @@ from api.config import (
     HERMES_PROFILES_DIR,
 )
 from api.services.metadata_service import metadata_service
+from api.services.pricing_engine import pricing_engine
 
 
 class HermesReader:
@@ -577,8 +578,18 @@ class HermesReader:
             cutoff_ts = now_ts - 86400
         elif time_range in ("7d", "7days", "week"):
             cutoff_ts = now_ts - (7 * 86400)
-        elif time_range in ("30d", "30days", "month"):
+        elif time_range in ("30d", "30days"):
             cutoff_ts = now_ts - (30 * 86400)
+        elif time_range in ("month", "this_month"):
+            import datetime
+            now_dt = datetime.datetime.now()
+            month_start = datetime.datetime(now_dt.year, now_dt.month, 1)
+            cutoff_ts = month_start.timestamp()
+
+        import datetime
+        now_dt = datetime.datetime.now()
+        month_start_ts = datetime.datetime(now_dt.year, now_dt.month, 1).timestamp()
+        current_month_cost = 0.0
 
         total_sessions = 0
         total_messages = 0
@@ -795,6 +806,7 @@ class HermesReader:
         local_sessions = 0
         cloud_sessions = 0
 
+        total_raw_cost = 0.0
         enhanced_models = []
         for m in model_rows:
             inp = m.get("input_tokens") or 0
@@ -803,8 +815,28 @@ class HermesReader:
             cwrite = m.get("cache_write_tokens") or 0
             reas = m.get("reasoning_tokens") or 0
             calls = m.get("api_call_count") or 0
-            cost = m.get("cost_usd") or 0.0
+            stored_cost = m.get("cost_usd") or 0.0
             scnt = m.get("session_count") or 0
+
+            is_local = self._is_local_model(m.get("model", ""), m.get("billing_provider", ""))
+            
+            # Reconcile via PricingEngine
+            rec = pricing_engine.reconcile_usage(
+                model_name=m.get("model", ""),
+                input_tokens=inp,
+                output_tokens=out,
+                cache_read_tokens=cread,
+                cache_write_tokens=cwrite,
+                reasoning_tokens=reas,
+                stored_cost_usd=stored_cost,
+                billing_provider=m.get("billing_provider", ""),
+            )
+            cost = rec.cost_usd
+            m["cost_usd"] = cost
+            m["raw_cost_usd"] = rec.raw_stored_cost_usd
+            m["is_reconciled"] = rec.is_reconciled
+            m["is_local"] = is_local
+            m["provider_category"] = self._classify_provider(m.get("model", ""))
 
             total_input += inp
             total_output += out
@@ -813,10 +845,7 @@ class HermesReader:
             total_reasoning += reas
             total_api_calls += calls
             total_cost += cost
-
-            is_local = self._is_local_model(m.get("model", ""), m.get("billing_provider", ""))
-            m["is_local"] = is_local
-            m["provider_category"] = self._classify_provider(m.get("model", ""))
+            total_raw_cost += stored_cost
 
             if is_local:
                 local_tokens += (inp + out)
@@ -869,6 +898,16 @@ class HermesReader:
         cache_hit_rate = round((total_cache_read / total_prompt_processed * 100), 2) if total_prompt_processed > 0 else 0.0
         zero_cost_ratio = round((local_tokens / (local_tokens + cloud_tokens) * 100), 1) if (local_tokens + cloud_tokens) > 0 else 0.0
 
+        spend_cap = 250.0
+        # If current_month_cost was not computed from a filtered view, compute it across models for month
+        if current_month_cost == 0.0:
+            for m in enhanced_models:
+                if not m.get("is_local"):
+                    current_month_cost += m.get("cost_usd", 0.0)
+
+        spend_cap_pct = round(min(100.0, (current_month_cost / spend_cap) * 100), 1) if spend_cap > 0 else 0.0
+        reconciled_delta = round(max(0.0, total_cost - total_raw_cost), 4)
+
         return {
             "time_range": time_range,
             "total_sessions": total_sessions,
@@ -881,6 +920,11 @@ class HermesReader:
             "total_api_calls": total_api_calls,
             "total_estimated_cost_usd": round(total_cost, 4),
             "total_actual_cost_usd": round(total_cost, 4),
+            "raw_stored_cost_usd": round(total_raw_cost, 4),
+            "reconciled_delta_usd": reconciled_delta,
+            "current_month_cost_usd": round(current_month_cost, 2),
+            "spend_cap_usd": spend_cap,
+            "spend_cap_pct": spend_cap_pct,
             "local_sessions_count": local_sessions,
             "cloud_sessions_count": cloud_sessions,
             "local_tokens_total": local_tokens,
