@@ -23,6 +23,31 @@ function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
+// Mobile drawer
+function toggleMobileMenu() {
+  const drawer = document.getElementById('mobile-drawer');
+  const overlay = document.getElementById('mobile-drawer-overlay');
+  if (!drawer) return;
+  const open = drawer.classList.contains('flex');
+  if (open) {
+    closeMobileMenu();
+  } else {
+    drawer.classList.remove('hidden');
+    drawer.classList.add('flex');
+    if (overlay) overlay.classList.remove('hidden');
+  }
+}
+
+function closeMobileMenu() {
+  const drawer = document.getElementById('mobile-drawer');
+  const overlay = document.getElementById('mobile-drawer-overlay');
+  if (drawer) {
+    drawer.classList.add('hidden');
+    drawer.classList.remove('flex');
+  }
+  if (overlay) overlay.classList.add('hidden');
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
   lucide.createIcons();
@@ -33,16 +58,16 @@ document.addEventListener('DOMContentLoaded', () => {
 // Tab Navigation
 function switchTab(tabId) {
   currentTab = tabId;
-  document.querySelectorAll('.tab-btn').forEach(btn => {
+  document.querySelectorAll('.tab-btn, .mobile-tab-btn').forEach(btn => {
     btn.classList.remove('bg-brand-600/20', 'text-brand-400', 'border', 'border-brand-500/30', 'text-white');
     btn.classList.add('text-slate-400');
   });
 
-  const activeBtn = document.getElementById(`tab-${tabId}`);
-  if (activeBtn) {
+  [document.getElementById(`tab-${tabId}`), document.getElementById(`tab-${tabId}-m`)].forEach(activeBtn => {
+    if (!activeBtn) return;
     activeBtn.classList.remove('text-slate-400');
     activeBtn.classList.add('bg-brand-600/20', 'text-brand-400', 'border', 'border-brand-500/30', 'text-white');
-  }
+  });
 
   document.querySelectorAll('.view-panel').forEach(panel => panel.classList.add('hidden'));
   const activePanel = document.getElementById(`view-${tabId}`);
@@ -1149,231 +1174,193 @@ async function loadNodes(force = false) {
 }
 
 function renderInstrumentCluster(n) {
-  const gpu = n.amdgpu || {};
-  const inf = n.inference_engine || {};
+  // Geometry helpers (SVG arc/tick generation)
+  const _rad = (d) => d * Math.PI / 180;
+  const _polar = (cx, cy, r, a) => [cx + r * Math.cos(_rad(a)), cy + r * Math.sin(_rad(a))];
+  function arc(cx, cy, r, a0, a1) {
+    const [x0, y0] = _polar(cx, cy, r, a0);
+    const [x1, y1] = _polar(cx, cy, r, a1);
+    const large = Math.abs(a1 - a0) > 180 ? 1 : 0;
+    return `M ${x0.toFixed(1)} ${y0.toFixed(1)} A ${r} ${r} 0 ${large} 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`;
+  }
+  function ticks(cx, cy, r, a0, a1, marks) {
+    return marks.map(([ang, label, color]) => {
+      const [x1, y1] = _polar(cx, cy, r - 3, ang);
+      const [x2, y2] = _polar(cx, cy, r + 5, ang);
+      let s = `    <line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${color}" stroke-width="3" />`;
+      if (label !== null && label !== undefined) {
+        const [tx, ty] = _polar(cx, cy, r + 16, ang);
+        s += `\n    <text x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" fill="${color}" font-size="10" font-weight="900" font-family="sans-serif" text-anchor="middle">${label}</text>`;
+      }
+      return s;
+    }).join('\n');
+  }
+
   const hw = n.hardware || {};
-  const telltales = n.cluster_telltales || {};
+  const gpu = hw.gpu || {};
+  const inf = hw.inference_engine || {};
+  const sys = hw.system || {};
+
+  // --- Gauges ---
+  const temp = gpu.temperature_c !== undefined ? gpu.temperature_c : (gpu.temp_c || 0);
+  const tempPct = Math.min(1, Math.max(0, (temp - 30) / 80)); // 30-110C span
 
   const gpuLoad = gpu.gpu_busy_percent !== undefined ? gpu.gpu_busy_percent : 0;
-  const gttTotal = gpu.gtt_total_gb || (hw.ram_gb || 128);
-  const gttUsed = gpu.gtt_used_gb || (gpu.vram_used_gb || 0);
-  const temp = gpu.temperature_c !== undefined ? gpu.temperature_c : 38.5;
-  const power = gpu.power_w !== undefined ? gpu.power_w : (gpuLoad > 0 ? 45.0 : 18.0);
-  
-  const activeSlots = inf.slot_summary?.active_slots || telltales.active_slots || 0;
-  const totalSlots = inf.slot_summary?.total_slots || telltales.total_slots || 2;
-  const isGenerating = Boolean(activeSlots > 0 || gpuLoad > 10 || telltales.is_generating);
-  const isThrottled = Boolean(gpu.is_throttled || telltales.is_throttled || temp > 85);
-  const oomAlert = Boolean(gpu.oom_kills > 0 || telltales.oom_alert);
-  const gear = telltales.gear || (isGenerating ? 'D' : 'P');
+  const gpuAngle = -120 + Math.min(100, Math.max(0, gpuLoad)) * 2.4;
 
-  // Needle angles swept over 240 degrees (-120 to +120)
-  const tachAngle = -120 + (Math.min(100, Math.max(0, gpuLoad)) / 100.0) * 240.0;
-  const speedAngle = -120 + (Math.min(gttTotal, Math.max(0, gttUsed)) / (gttTotal || 128.0)) * 240.0;
-  const tempPct = Math.min(1.0, Math.max(0.0, (temp - 30.0) / 70.0));
-  const tempAngle = -135 + tempPct * 90.0;
-  const powerPct = Math.min(1.0, Math.max(0.0, power / 120.0));
-  const powerAngle = 45 + powerPct * 90.0;
-  const safeId = (n.node_id || 'node').replace(/[^a-zA-Z0-9_-]/g, '_');
+  // GTT scaled to node's actual available room (0-118GB chunkito, 0-16GB beehive)
+  // GTT: scale to the node's actual available room (e.g. 0-118GB on chunkito, 0-16GB on beehive)
+  const gttTotal = gpu.gtt_total_gb || (sys.gtt_total_gb || (gpu.vram_gb !== undefined ? gpu.vram_gb : (sys.ram_gb ? 118 : 16)));
+  const gttUsed = Math.min(gpu.gtt_used_gb !== undefined ? gpu.gtt_used_gb : (gpu.vram_used_gb || 0), gttTotal);
+  const gttPct = gttTotal > 0 ? Math.min(100, (gttUsed / gttTotal) * 100) : 0;
+  const gttAngle = -120 + gttPct * 2.4;
 
-  return `
-    <div class="rounded-xl overflow-hidden bg-gradient-to-b from-[#070c18] via-[#04060e] to-[#020307] border border-cyan-500/25 p-3 shadow-2xl space-y-2">
-      <div class="flex items-center justify-between text-[11px] font-mono text-cyan-400/80 px-1 border-b border-cyan-500/10 pb-1.5">
-        <span class="flex items-center space-x-1.5">
-          <span class="w-2 h-2 rounded-full ${isGenerating ? 'bg-emerald-400 animate-pulse' : 'bg-cyan-500'}"></span>
-          <span class="tracking-wider uppercase font-semibold">APU Cockpit Telemetry Cluster</span>
-        </span>
-        <span class="text-slate-400">${escapeHtml(gpu.device_path || 'Radeon 8060S Strix Halo')}</span>
-      </div>
+  // Power scaled to % of TDP (0-120W chunkito, 0-54W beehive)
+  const tdpMax = sys.tdp_w || (gpu.tdp_w || (sys.role === 'Coordinator' ? 54 : 120));
+  const power = gpu.power_w !== undefined ? gpu.power_w : (gpu.tdp_w !== undefined ? 0 : 0);
+  const powerPct = tdpMax > 0 ? Math.min(100, (power / tdpMax) * 100) : 0;
+  const powerAngle = -120 + powerPct * 2.4;
 
-      <svg viewBox="0 0 760 210" class="w-full max-w-2xl mx-auto rounded-lg" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <filter id="glow-cyan-${safeId}" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur stdDeviation="3" result="blur" />
-            <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-          </filter>
-          <filter id="glow-red-${safeId}" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur stdDeviation="3" result="blur" />
-            <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-          </filter>
-          <linearGradient id="arc-tach-${safeId}" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%" stop-color="#00e5ff" />
-            <stop offset="80%" stop-color="#00e5ff" />
-            <stop offset="90%" stop-color="#ff9100" />
-            <stop offset="100%" stop-color="#ff1744" />
-          </linearGradient>
-        </defs>
+  const activeSlots = inf.slot_summary ? (inf.slot_summary.active_slots || 0) : 0;
+  const totalSlots = inf.slot_summary ? (inf.slot_summary.total_slots || 0) : (inf.slots ? inf.slots.length : 2);
+  const slotPct = totalSlots > 0 ? Math.min(100, (activeSlots / totalSlots) * 100) : 0;
+  const slotAngle = -120 + slotPct * 2.4;
 
-        <!-- TOP TELLTALES BAR -->
-        <g id="telltales">
-          <!-- Turn Left -->
-          <polygon points="215,22 200,30 215,38" fill="#30d158" opacity="${isGenerating ? '1' : '0.2'}" class="${isGenerating ? 'animate-pulse' : ''}" />
-          
-          <!-- High Beam / Tailscale -->
-          <g transform="translate(325, 20)" opacity="0.95">
-            <path d="M 0 5 A 7 7 0 0 1 14 5 L 14 15 A 7 7 0 0 1 0 15 Z" fill="#00e5ff" />
-            <line x1="17" y1="6" x2="24" y2="6" stroke="#00e5ff" stroke-width="1.5" />
-            <line x1="17" y1="10" x2="24" y2="10" stroke="#00e5ff" stroke-width="1.5" />
-            <line x1="17" y1="14" x2="24" y2="14" stroke="#00e5ff" stroke-width="1.5" />
-          </g>
+  // Colors
+  const tempColor = temp >= 85 ? '#ff3b30' : temp >= 70 ? '#ff9500' : '#00e5ff';
+  const slotColor = slotPct > 0 ? '#00e5ff' : '#647435';
 
-          <!-- Turn Right -->
-          <polygon points="545,22 560,30 545,38" fill="#30d158" opacity="${isGenerating ? '1' : '0.2'}" class="${isGenerating ? 'animate-pulse' : ''}" />
+  const cid = n.id ? String(n.id).replace(/[^a-zA-Z0-9_-]/g, '') : 'node';
 
-          <!-- Oil/Thermal Warning -->
-          <g transform="translate(365, 20)" opacity="${isThrottled ? '1' : '0.2'}">
-            <path d="M 2 12 Q 5 6 12 6 L 16 6 Q 20 8 20 12 L 18 16 Q 16 18 10 18 Z" fill="#ff9100" />
-            <circle cx="6" cy="14" r="1.5" fill="#ff9100" />
-          </g>
+  // Precomputed geometry (viewBox 0 0 760 215)
+  // Main speedo: cx=245 cy=110 r=75, sweep 240deg from -120 to 120
+  // GTT: cx=515 cy=110 r=75
+  // TEMP: cx=65 cy=110 r=40
+  // POWER: cx=695 cy=110 r=40
+  // SLOTS: cx=380 cy=110 r=32
 
-          <!-- Battery/Power Warning -->
-          <g transform="translate(415, 20)" opacity="${power > 95 ? '1' : '0.2'}">
-            <rect x="0" y="4" width="18" height="12" rx="2" fill="none" stroke="#ff1744" stroke-width="1.5" />
-            <line x1="4" y1="10" x2="8" y2="10" stroke="#ff1744" stroke-width="1.5" />
-            <line x1="10" y1="10" x2="14" y2="10" stroke="#ff1744" stroke-width="1.5" />
-            <line x1="12" y1="8" x2="12" y2="12" stroke="#ff1744" stroke-width="1.5" />
-          </g>
+  const mainArc = arc(245, 110, 75, -120, 120);
+  const gttArc = arc(515, 110, 75, -120, 120);
+  const tempArc = arc(65, 110, 40, -120, 120);
+  const powerArc = arc(695, 110, 40, -120, 120);
+  const slotArc = arc(380, 110, 32, -120, 120);
 
-          <!-- Check Engine / OOM -->
-          <g transform="translate(715, 22)" opacity="${oomAlert ? '1' : '0.2'}">
-            <circle cx="10" cy="10" r="9" fill="none" stroke="#ff1744" stroke-width="1.5" />
-            <text x="10" y="14" fill="#ff1744" font-size="11" font-weight="bold" text-anchor="middle">!</text>
-          </g>
+  const mainTicks = ticks(245, 110, 88, -120, 120, [
+    [-120, '0', '#ffffff'], [-60, '25', '#ffffff'], [0, '50', '#ffffff'], [60, '75', '#ffffff'], [120, '100', tempColor]
+  ]);
+  const gttTicks = ticks(515, 110, 88, -120, 120, [
+    [-120, '0', '#00e5ff'], [-60, Math.round(gttTotal/4), '#00e5ff'], [0, Math.round(gttTotal/2), '#00e5ff'], [60, Math.round(3*gttTotal/4), '#00e5ff'], [120, Math.round(gttTotal), '#00e5ff']
+  ]);
+  const tempTicks = ticks(65, 110, 47, -120, 120, [
+    [-120, '30', '#ffffff'], [0, '70', '#ffffff'], [120, '110', '#ffffff']
+  ]);
+  const powerTicks = ticks(695, 110, 47, -120, 120, [
+    [-120, '0', '#ffffff'], [0, '50', '#ffffff'], [120, '100', '#ffffff']
+  ]);
+
+  const arcLen = (r, pct) => (r * 2 * Math.PI * 240 / 360) * (pct / 100);
+
+  const mainArcLen = arcLen(75, Math.min(100, Math.max(0, gpuLoad)));
+  const gttArcLen = arcLen(75, gttPct);
+  const tempArcLen = arcLen(40, tempPct * 100);
+  const powerArcLen = arcLen(40, powerPct);
+  const slotArcLen = arcLen(32, slotPct);
+
+  const mainTotal = 75 * 2 * Math.PI * 240 / 360;
+  const gttTotalLen = mainTotal;
+  const tempTotal = 40 * 2 * Math.PI * 240 / 360;
+  const slotTotal = 32 * 2 * Math.PI * 240 / 360;
+
+  const svg = `
+    <svg viewBox="0 0 760 215" class="w-full h-auto" style="max-height: 230px" role="img" aria-label="${n.name || 'Node'} instrument cluster">
+      <defs>
+        <radialGradient id="face-${cid}" cx="50%" cy="42%" r="68%">
+          <stop offset="0%" stop-color="#141a26" />
+          <stop offset="100%" stop-color="#0a0d13" />
+        </radialGradient>
+      </defs>
+
+      <rect x="0" y="0" width="760" height="215" fill="#0a0d13" />
+      <rect x="0" y="0" width="760" height="3" fill="#1e293b" />
+      <rect x="0" y="212" width="760" height="3" fill="#1e293b" />
+
+      <!-- Node identity strip -->
+      <text x="12" y="18" fill="#ffffff" font-size="11" font-weight="900" font-family="sans-serif" letter-spacing="1">${(n.name || 'NODE').toUpperCase()}</text>
+      <text x="748" y="18" fill="#00e5ff" font-size="10" font-weight="900" font-family="sans-serif" text-anchor="end">${n.role || ''}</text>
+
+      <!-- 1. MAIN: GPU LOAD speedo (240deg sweep) -->
+      <g>
+        <circle cx="245" cy="110" r="82" fill="url(#face-${cid})" stroke="#1e293b" stroke-width="1" />
+        <path d="${mainArc}" fill="none" stroke="#232a38" stroke-width="12" stroke-linecap="round" />
+        <path d="${mainArc}" fill="none" stroke="${tempColor}" stroke-width="12" stroke-linecap="round" stroke-dasharray="${mainArcLen} ${mainTotal}" />
+        ${mainTicks}
+        <g transform="rotate(${gpuAngle} 245 110)">
+          <polygon points="241.5,110 248.5,110 245.5,42 244.5,42" fill="${tempColor}" />
+          <circle cx="245" cy="110" r="6.5" fill="#ffffff" stroke="${tempColor}" stroke-width="2" />
         </g>
+        <!-- Readout below pivot: value y=165, label y=182 -->
+        <text x="245" y="165" fill="#ffffff" font-size="22" font-weight="900" font-family="sans-serif" text-anchor="middle">${Math.round(gpuLoad)}%</text>
+        <text x="245" y="182" fill="#00e5ff" font-size="9" font-weight="900" font-family="sans-serif" text-anchor="middle" letter-spacing="1.5">GPU LOAD</text>
+      </g>
 
-        <!-- 1. WING LEFT: GPU TEMPERATURE (Coolant Gauge) -->
-        <g id="dial-temp">
-          <path d="M 33.0 147.2 A 42 42 0 0 1 33.0 82.8" fill="none" stroke="#00e5ff" stroke-width="3" stroke-dasharray="2,3" opacity="0.6" />
-          <path d="M 33.0 95.0 A 42 42 0 0 1 33.0 82.8" fill="none" stroke="#ff1744" stroke-width="3.5" />
-          <text x="25" y="152" fill="#94a3b8" font-size="9" font-family="sans-serif">30</text>
-          <text x="18" y="118" fill="#94a3b8" font-size="9" font-family="sans-serif">65</text>
-          <text x="22" y="85" fill="#ff1744" font-size="9" font-family="sans-serif">100</text>
-          <!-- Temp Needle -->
-          <g transform="rotate(${tempAngle.toFixed(1)}, 65, 115)">
-            <polygon points="63,115 67,115 65.5,84 64.5,84" fill="#ffffff" filter="url(#glow-cyan-${safeId})" />
-            <circle cx="65" cy="115" r="3.5" fill="#e2e8f0" />
-          </g>
-          <!-- Readout -->
-          <text x="65" y="132" fill="#00e5ff" font-size="11" font-weight="bold" font-family="monospace" text-anchor="middle">${temp.toFixed(1)}°C</text>
-          <text x="65" y="144" fill="#64748b" font-size="8" font-family="sans-serif" text-anchor="middle">GPU TEMP</text>
+      <!-- 2. GTT unified memory speedo (% of available room) -->
+      <g>
+        <circle cx="515" cy="110" r="82" fill="url(#face-${cid})" stroke="#1e293b" stroke-width="1" />
+        <path d="${gttArc}" fill="none" stroke="#232a38" stroke-width="12" stroke-linecap="round" />
+        <path d="${gttArc}" fill="none" stroke="#00e5ff" stroke-width="12" stroke-linecap="round" stroke-dasharray="${gttArcLen} ${gttTotalLen}" />
+        ${gttTicks}
+        <g transform="rotate(${gttAngle} 515 110)">
+          <polygon points="511.5,110 518.5,110 515.5,42 514.5,42" fill="#00e5ff" />
+          <circle cx="515" cy="110" r="6.5" fill="#ffffff" stroke="#00e5ff" stroke-width="2" />
         </g>
+        <text x="515" y="165" fill="#ffffff" font-size="22" font-weight="900" font-family="sans-serif" text-anchor="middle">${Math.round(gttPct)}%</text>
+        <text x="515" y="182" fill="#00e5ff" font-size="9" font-weight="900" font-family="sans-serif" text-anchor="middle" letter-spacing="1">${gttUsed.toFixed(1)} / ${gttTotal.toFixed(1)} GB GTT</text>
+      </g>
 
-        <!-- 2. PRIMARY LEFT: GPU CORE LOAD (Tachometer) -->
-        <g id="dial-gpu-load">
-          <!-- Scale Arc -->
-          <path d="M 185.0 152.5 A 75 75 0 1 1 315.0 152.5" fill="none" stroke="url(#arc-tach-${safeId})" stroke-width="6" stroke-linecap="round" opacity="0.85" />
-          <!-- Ticks -->
-          <line x1="185" y1="152" x2="195" y2="147" stroke="#00e5ff" stroke-width="2.5" />
-          <text x="180" y="162" fill="#ffffff" font-size="12" font-weight="bold" font-family="sans-serif">0</text>
-
-          <line x1="175" y1="115" x2="187" y2="115" stroke="#00e5ff" stroke-width="2.5" />
-          <text x="165" y="119" fill="#ffffff" font-size="12" font-weight="bold" font-family="sans-serif">2</text>
-
-          <line x1="205" y1="65" x2="214" y2="74" stroke="#00e5ff" stroke-width="2.5" />
-          <text x="200" y="60" fill="#ffffff" font-size="12" font-weight="bold" font-family="sans-serif">4</text>
-
-          <line x1="285" y1="65" x2="276" y2="74" stroke="#00e5ff" stroke-width="2.5" />
-          <text x="290" y="60" fill="#ffffff" font-size="12" font-weight="bold" font-family="sans-serif">6</text>
-
-          <line x1="315" y1="115" x2="303" y2="115" stroke="#ff9100" stroke-width="2.5" />
-          <text x="325" y="119" fill="#ffffff" font-size="12" font-weight="bold" font-family="sans-serif">8</text>
-
-          <line x1="305" y1="152" x2="295" y2="147" stroke="#ff1744" stroke-width="2.5" />
-          <text x="312" y="162" fill="#ff1744" font-size="12" font-weight="bold" font-family="sans-serif">10</text>
-
-          <!-- Subtitles -->
-          <text x="245" y="100" fill="#94a3b8" font-size="10" font-family="sans-serif" text-anchor="middle">x 10 %</text>
-          <text x="245" y="132" fill="#ffffff" font-size="18" font-weight="bold" font-family="monospace" text-anchor="middle">${gpuLoad}%</text>
-          <text x="245" y="146" fill="#38bdf8" font-size="9" font-family="sans-serif" text-anchor="middle" letter-spacing="1">GPU LOAD</text>
-
-          <!-- Red Tach Needle -->
-          <g transform="rotate(${tachAngle.toFixed(1)}, 245, 115)">
-            <polygon points="242,115 248,115 245.5,50 244.5,50" fill="#ff3b30" filter="url(#glow-red-${safeId})" />
-            <circle cx="245" cy="115" r="7" fill="#ffffff" stroke="#ff3b30" stroke-width="2" />
-          </g>
+      <!-- 3. TEMP wing gauge -->
+      <g>
+        <circle cx="65" cy="110" r="44" fill="url(#face-${cid})" stroke="#1e293b" stroke-width="1" />
+        <path d="${tempArc}" fill="none" stroke="#232a38" stroke-width="10" stroke-linecap="round" />
+        <path d="${tempArc}" fill="none" stroke="${tempColor}" stroke-width="10" stroke-linecap="round" stroke-dasharray="${tempArcLen} ${tempTotal}" />
+        ${tempTicks}
+        <g transform="rotate(${-120 + tempPct * 240} 65 110)">
+          <polygon points="62.5,110 67.5,110 65.5,72 64.5,72" fill="${tempColor}" />
+          <circle cx="65" cy="110" r="5" fill="#ffffff" stroke="${tempColor}" stroke-width="1.5" />
         </g>
+        <text x="65" y="165" fill="#ffffff" font-size="16" font-weight="900" font-family="sans-serif" text-anchor="middle">${temp.toFixed(1)}&#176;</text>
+        <text x="65" y="182" fill="#00e5ff" font-size="9" font-weight="900" font-family="sans-serif" text-anchor="middle">TEMP</text>
+      </g>
 
-        <!-- 3. PRIMARY RIGHT: GTT UNIFIED MEMORY (Speedometer) -->
-        <g id="dial-gtt-speedo">
-          <path d="M 445.0 152.5 A 75 75 0 1 1 575.0 152.5" fill="none" stroke="#00e5ff" stroke-width="5" stroke-linecap="round" opacity="0.9" filter="url(#glow-cyan-${safeId})" />
-
-          <text x="440" y="162" fill="#ffffff" font-size="11" font-weight="bold" font-family="sans-serif">0</text>
-          <text x="425" y="119" fill="#ffffff" font-size="11" font-weight="bold" font-family="sans-serif">20</text>
-          <text x="445" y="70" fill="#ffffff" font-size="11" font-weight="bold" font-family="sans-serif">40</text>
-          <text x="485" y="52" fill="#ffffff" font-size="11" font-weight="bold" font-family="sans-serif">60</text>
-          <text x="535" y="52" fill="#ffffff" font-size="11" font-weight="bold" font-family="sans-serif">80</text>
-          <text x="575" y="75" fill="#ffffff" font-size="11" font-weight="bold" font-family="sans-serif">100</text>
-          <text x="585" y="119" fill="#ffffff" font-size="11" font-weight="bold" font-family="sans-serif">120</text>
-          <text x="568" y="162" fill="#00e5ff" font-size="11" font-weight="bold" font-family="sans-serif">128</text>
-
-          <!-- Subtitles -->
-          <text x="510" y="100" fill="#94a3b8" font-size="10" font-family="sans-serif" text-anchor="middle">GB / GTT</text>
-          <text x="510" y="132" fill="#00e5ff" font-size="18" font-weight="bold" font-family="monospace" text-anchor="middle">${gttUsed.toFixed(1)}</text>
-          <text x="510" y="146" fill="#818cf8" font-size="9" font-family="sans-serif" text-anchor="middle" letter-spacing="1">ALLOCATION</text>
-
-          <!-- Speedo White Needle -->
-          <g transform="rotate(${speedAngle.toFixed(1)}, 510, 115)">
-            <polygon points="507,115 513,115 510.5,50 509.5,50" fill="#ffffff" filter="url(#glow-cyan-${safeId})" />
-            <circle cx="510" cy="115" r="7" fill="#ffffff" stroke="#00e5ff" stroke-width="2" />
-          </g>
+      <!-- 4. POWER wing gauge (% of TDP) -->
+      <g>
+        <circle cx="695" cy="110" r="44" fill="url(#face-${cid})" stroke="#1e293b" stroke-width="1" />
+        <path d="${powerArc}" fill="none" stroke="#232a38" stroke-width="10" stroke-linecap="round" />
+        <path d="${powerArc}" fill="none" stroke="${powerPct > 90 ? '#ff3b30' : '#00e5ff'}" stroke-width="10" stroke-linecap="round" stroke-dasharray="${powerArcLen} ${tempTotal}" />
+        ${powerTicks}
+        <g transform="rotate(${powerAngle} 695 110)">
+          <polygon points="692.5,110 697.5,110 695.5,72 694.5,72" fill="${powerPct > 90 ? '#ff3b30' : '#00e5ff'}" />
+          <circle cx="695" cy="110" r="5" fill="#ffffff" stroke="${powerPct > 90 ? '#ff3b30' : '#00e5ff'}" stroke-width="1.5" />
         </g>
+        <text x="695" y="165" fill="#ffffff" font-size="16" font-weight="900" font-family="sans-serif" text-anchor="middle">${Math.round(powerPct)}%</text>
+        <text x="695" y="182" fill="#00e5ff" font-size="9" font-weight="900" font-family="sans-serif" text-anchor="middle">${power.toFixed(1)} / ${tdpMax}W TDP</text>
+      </g>
 
-        <!-- 4. WING RIGHT: POWER / TDP (Fuel Gauge) -->
-        <g id="dial-power">
-          <path d="M 727.0 82.8 A 42 42 0 0 1 727.0 147.2" fill="none" stroke="#ff9100" stroke-width="3" stroke-dasharray="2,3" opacity="0.7" />
-          <path d="M 727.0 82.8 A 42 42 0 0 1 727.0 95.0" fill="none" stroke="#ff1744" stroke-width="3.5" />
-          <text x="732" y="85" fill="#ff1744" font-size="9" font-family="sans-serif">120</text>
-          <text x="735" y="118" fill="#94a3b8" font-size="9" font-family="sans-serif">60</text>
-          <text x="732" y="152" fill="#94a3b8" font-size="9" font-family="sans-serif">0</text>
-          <!-- Power Needle -->
-          <g transform="rotate(${powerAngle.toFixed(1)}, 695, 115)">
-            <polygon points="693,115 697,115 695.5,84 694.5,84" fill="#ffffff" filter="url(#glow-cyan-${safeId})" />
-            <circle cx="695" cy="115" r="3.5" fill="#e2e8f0" />
-          </g>
-          <!-- Readout -->
-          <text x="695" y="132" fill="#ff9100" font-size="11" font-weight="bold" font-family="monospace" text-anchor="middle">${power.toFixed(0)}W</text>
-          <text x="695" y="144" fill="#64748b" font-size="8" font-family="sans-serif" text-anchor="middle">POWER TDP</text>
+      <!-- 5. SLOTS mini dial -->
+      <g>
+        <circle cx="380" cy="110" r="36" fill="url(#face-${cid})" stroke="#1e293b" stroke-width="1" />
+        <path d="${slotArc}" fill="none" stroke="#232a38" stroke-width="10" stroke-linecap="round" />
+        <path d="${slotArc}" fill="none" stroke="${slotColor}" stroke-width="10" stroke-linecap="round" stroke-dasharray="${slotArcLen} ${slotTotal}" />
+        <g transform="rotate(${slotAngle} 380 110)">
+          <polygon points="378,110 382,110 380.5,78 379.5,78" fill="${slotColor}" />
+          <circle cx="380" cy="110" r="4" fill="#ffffff" stroke="${slotColor}" stroke-width="1.5" />
         </g>
-
-        <!-- BOTTOM CENTER: GEAR [P] / [D] & DIGITAL ODOMETER -->
-        <g id="center-display">
-          <!-- Gear Box -->
-          <rect x="330" y="85" width="26" height="26" rx="5" fill="#020617" stroke="#00e5ff" stroke-width="1.5" filter="url(#glow-cyan-${safeId})" />
-          <text x="343" y="103" fill="#00e5ff" font-size="15" font-weight="bold" font-family="sans-serif" text-anchor="middle">${gear}</text>
-
-          <!-- Digital Odometer (tokens / memory footprint) -->
-          <rect x="365" y="87" width="80" height="22" rx="3" fill="#020617" stroke="#334155" stroke-width="1" />
-          <text x="405" y="103" fill="#38bdf8" font-size="12" font-family="monospace" font-weight="bold" text-anchor="middle">${Math.round(gttUsed * 1000).toString().padStart(5, '0')}</text>
-
-          <!-- Trip / Active Slots -->
-          <rect x="375" y="118" width="60" height="18" rx="3" fill="#020617" stroke="#1e293b" stroke-width="1" />
-          <text x="405" y="131" fill="#94a3b8" font-size="9" font-family="monospace" text-anchor="middle">${activeSlots}/${totalSlots} SLOTS</text>
-        </g>
-      </svg>
-
-      <!-- Precision Spark Metric Footnotes -->
-      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 font-mono text-[11px]">
-        <div class="p-2 rounded bg-dark-900/90 border border-slate-800/80">
-          <div class="text-slate-500 text-[10px]">GPU Core Load</div>
-          <div class="text-white font-bold">${gpuLoad}%</div>
-        </div>
-        <div class="p-2 rounded bg-dark-900/90 border border-slate-800/80">
-          <div class="text-slate-500 text-[10px]">GTT Allocation</div>
-          <div class="text-indigo-300 font-bold">${gttUsed.toFixed(1)} / ${gttTotal.toFixed(1)} GB</div>
-        </div>
-        <div class="p-2 rounded bg-dark-900/90 border border-slate-800/80">
-          <div class="text-slate-500 text-[10px]">GPU Temp</div>
-          <div class="text-emerald-400 font-bold">${temp.toFixed(1)}°C</div>
-        </div>
-        <div class="p-2 rounded bg-dark-900/90 border border-slate-800/80">
-          <div class="text-slate-500 text-[10px]">Power / TDP</div>
-          <div class="text-amber-400 font-bold">${power.toFixed(0)}W / 120W</div>
-        </div>
-      </div>
-    </div>
+        <text x="380" y="165" fill="#ffffff" font-size="16" font-weight="900" font-family="sans-serif" text-anchor="middle">${activeSlots}/${totalSlots}</text>
+        <text x="380" y="182" fill="#00e5ff" font-size="9" font-weight="900" font-family="sans-serif" text-anchor="middle" letter-spacing="1.5">SLOTS</text>
+      </g>
+    </svg>
   `;
+  return svg;
 }
-
 function renderNodesGrid(nodes) {
   const container = document.getElementById('nodesGrid');
   if (!container) return;
