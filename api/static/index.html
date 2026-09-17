@@ -48,6 +48,10 @@
   <!-- Top Navbar -->
   <header class="border-b border-slate-800/80 bg-dark-900/90 backdrop-blur sticky top-0 z-40 px-6 py-3.5 flex items-center justify-between">
     <div class="flex items-center space-x-3">
+      <!-- Mobile hamburger (drawer toggle) -->
+      <button onclick="toggleMobileMenu()" class="md:hidden -ml-2 p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800/60" aria-label="Open navigation">
+        <i data-lucide="menu" class="w-5 h-5"></i>
+      </button>
       <div class="w-9 h-9 rounded-lg bg-gradient-to-tr from-brand-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-brand-500/20 text-white font-bold text-lg">
         ☸️
       </div>
@@ -79,7 +83,7 @@
   <div class="flex flex-1 overflow-hidden">
     
     <!-- Sidebar Navigation -->
-    <aside class="w-64 border-r border-slate-800/80 bg-dark-900 flex flex-col shrink-0">
+    <aside id="mobile-drawer" class="w-64 border-r border-slate-800/80 bg-dark-900 flex-col shrink-0 hidden md:flex fixed md:static inset-y-0 left-0 z-50 md:z-auto overflow-y-auto">
       <nav class="p-3 space-y-1">
         <button onclick="switchTab('sessions')" id="tab-sessions" class="tab-btn w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition text-white bg-brand-600/20 text-brand-400 border border-brand-500/30">
           <i data-lucide="messages-square" class="w-4 h-4"></i>
@@ -150,7 +154,7 @@
     </aside>
 
     <!-- Main View Content -->
-    <main class="flex-1 overflow-y-auto p-6 relative">
+    <main class="flex-1 overflow-y-auto p-6 pb-24 md:pb-6 relative">
       
       <!-- TAB: SESSIONS -->
       <section id="view-sessions" class="view-panel space-y-6">
@@ -978,5 +982,48 @@
   </div>
 
   <script src="/static/app.js?v=2.2.0"></script>
+    <!-- Mobile drawer overlay (tap to close) -->
+    <div id="mobile-drawer-overlay" onclick="closeMobileMenu()" class="fixed inset-0 bg-black/60 z-40 hidden md:hidden" aria-hidden="true"></div>
+
+    <!-- Mobile bottom tab bar -->
+    <nav class="md:hidden fixed bottom-0 inset-x-0 z-40 bg-dark-900/95 backdrop-blur border-t border-slate-800/80 flex items-stretch justify-around px-1 pb-[env(safe-area-inset-bottom)]" aria-label="Primary">
+      <button onclick="switchTab('sessions'); closeMobileMenu()" id="tab-sessions-m" class="mobile-tab-btn flex flex-col items-center justify-center gap-0.5 px-1 py-2 text-[10px] font-medium text-slate-400">
+        <i data-lucide="messages-square" class="w-4 h-4"></i>
+        <span>Sessions</span>
+      </button>
+      <button onclick="switchTab('analytics'); closeMobileMenu()" id="tab-analytics-m" class="mobile-tab-btn flex flex-col items-center justify-center gap-0.5 px-1 py-2 text-[10px] font-medium text-slate-400">
+        <i data-lucide="bar-chart-3" class="w-4 h-4"></i>
+        <span>Analytics</span>
+      </button>
+      <button onclick="switchTab('pantheon'); closeMobileMenu()" id="tab-pantheon-m" class="mobile-tab-btn flex flex-col items-center justify-center gap-0.5 px-1 py-2 text-[10px] font-medium text-slate-400">
+        <i data-lucide="users" class="w-4 h-4"></i>
+        <span>Pantheon</span>
+      </button>
+      <button onclick="switchTab('skills'); closeMobileMenu()" id="tab-skills-m" class="mobile-tab-btn flex flex-col items-center justify-center gap-0.5 px-1 py-2 text-[10px] font-medium text-slate-400">
+        <i data-lucide="sparkles" class="w-4 h-4"></i>
+        <span>Skills</span>
+      </button>
+      <button onclick="switchTab('memory'); closeMobileMenu()" id="tab-memory-m" class="mobile-tab-btn flex flex-col items-center justify-center gap-0.5 px-1 py-2 text-[10px] font-medium text-slate-400">
+        <i data-lucide="brain-circuit" class="w-4 h-4"></i>
+        <span>Memory</span>
+      </button>
+      <button onclick="switchTab('live'); closeMobileMenu()" id="tab-live-m" class="mobile-tab-btn flex flex-col items-center justify-center gap-0.5 px-1 py-2 text-[10px] font-medium text-slate-400">
+        <i data-lucide="radio" class="w-4 h-4"></i>
+        <span>Live</span>
+      </button>
+      <button onclick="switchTab('cron'); closeMobileMenu()" id="tab-cron-m" class="mobile-tab-btn flex flex-col items-center justify-center gap-0.5 px-1 py-2 text-[10px] font-medium text-slate-400">
+        <i data-lucide="clock" class="w-4 h-4"></i>
+        <span>Cron</span>
+      </button>
+      <button onclick="switchTab('nodes'); closeMobileMenu()" id="tab-nodes-m" class="mobile-tab-btn flex flex-col items-center justify-center gap-0.5 px-1 py-2 text-[10px] font-medium text-slate-400">
+        <i data-lucide="server" class="w-4 h-4"></i>
+        <span>Nodes</span>
+      </button>
+      <button onclick="switchTab('tickets'); closeMobileMenu()" id="tab-tickets-m" class="mobile-tab-btn flex flex-col items-center justify-center gap-0.5 px-1 py-2 text-[10px] font-medium text-slate-400">
+        <i data-lucide="ticket" class="w-4 h-4"></i>
+        <span>Tickets</span>
+      </button>
+    </nav>
+
 </body>
 </html>
