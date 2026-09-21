@@ -4,7 +4,8 @@
   - `specs/cost-estimation-engine.md`: SPEC-HK-002: Dynamic cost reconciliation & frontier pricing engine.
   - `specs/counterfactual-cloud-cost-and-savings.md`: SPEC-HK-003: Counterfactual cloud cost & hardware savings engine ("Shadow Cost").
   - `specs/cluster-gauge-node-view.md`: SPEC-HK-001: Multi-node APU telemetry & cluster gauges.
-  - `specs/cluster-gauge-refinement-and-mobile-ui.md`: SPEC-HK-001-B: Mobile responsive drawer & gauge layout.
+  - `specs/cluster-gauge-refinement-and-mobile-ui.md`: SPEC-HK-004: Mobile responsive drawer & gauge layout.
+  - `specs/cluster-gauge-and-token-analytics-refinements.md`: SPEC-HK-005: Gauge telemetry binding fix, 240° clock sweep (-210° to +30°), classic palette, output tokens pie & tok/s HUD.
 
 ## Backend Services (`api/services/`)
 - `hermes_reader.py`: `HermesReader`
@@ -46,7 +47,7 @@
 - `#tab-live`, `#view-live`: Live running sessions & subagent cards
 - `#tab-analytics`, `#view-analytics`: Cost & token distribution charts
 - `#tab-nodes`, `#view-nodes`: Fleet APU nodes view
-- `renderInstrumentCluster(node)`: SVG automotive instrument cluster component (thickened circular tracks, dropped digital readouts below pivots, dynamic 0-118GB / 0-16GB GTT & 0-100% TDP scales, high-contrast bold fonts)
+- `renderInstrumentCluster(node)`: SVG automotive instrument cluster component (240° clock sweep -210°→+30°, true telemetry via node.amdgpu/apu_vram/inference_engine, segmented cyan→amber→redline tracks, classic white needles, digital readouts at y=165/182)
 - `#mobileMenuBtn`, `#mobileNavDrawer`: Responsive mobile navigation drawer and touch tab bar
 - `#statTotalCost`, `#statSpendCap`: Reconciled spend card and monthly spend cap indicators
 - `#table-model-breakdown`: Multi-model usage table with reconciled badges
