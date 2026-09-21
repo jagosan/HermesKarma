@@ -23,6 +23,94 @@ from api.services.metadata_service import metadata_service
 from api.services.pricing_engine import pricing_engine
 
 
+# ---------------------------------------------------------------------------
+# Inference throughput baselines (SPEC-HK-005 / TASK-HK-105)
+#
+# Empirical decode (generation) speeds in tokens/second for the pantheon
+# roster. Live telemetry (`llamacpp:predicted_tokens_seconds` on chunkito)
+# is preferred when reachable; these baselines are the graceful fallback so
+# the gauge / velocity HUD always renders.
+# ---------------------------------------------------------------------------
+APU_DECODE_TOK_PER_SEC = 35.0            # Strix Halo (chunkito) llama.cpp decode
+APU_PREFILL_TOK_PER_SEC = 294.0          # Strix Halo (chunkito) prompt processing
+CLOUD_DECODE_TOK_PER_SEC = 145.0         # Cloud frontier aggregate reference
+BEEHIVE_OLLAMA_TOK_PER_SEC = 22.0        # beehive CPU/Ollama mid-band (18-25)
+CLOUD_DEFAULT_TOK_PER_SEC = 80.0         # unknown cloud model
+LOCAL_DEFAULT_TOK_PER_SEC = 25.0         # unknown local model
+
+THROUGHPUT_TIERS = ("ultra", "fast", "standard", "local_apu")
+
+# Exact model-name baselines (lower-cased comparison keys).
+MODEL_THROUGHPUT_BASELINES: Dict[str, Any] = {
+    "gemini-3.8-flash": (150.0, "ultra"),
+    "gemini-3.7-flash": (135.0, "fast"),
+    "gemini-3.6-flash": (122.0, "fast"),      # interpolated between 3.5 and 3.7
+    "gemini-3.5-flash": (110.0, "fast"),
+    "gemini-3.1-pro": (60.0, "standard"),
+    "gemini-3-flash-preview": (95.0, "standard"),
+    "qwen/qwen3.8-flash": (150.0, "ultra"),
+    "claude-opus-4": (45.0, "standard"),
+    "claude-3-opus": (45.0, "standard"),
+    # chunkito Strix Halo APU serving queue
+    "qwen3.8-flash-next:262k": (APU_DECODE_TOK_PER_SEC, "local_apu"),
+    "qwen3-coder-next:262k": (APU_DECODE_TOK_PER_SEC, "local_apu"),
+    "qwen3.8-27b": (APU_DECODE_TOK_PER_SEC, "local_apu"),
+    "deepseek-v4:96k": (APU_DECODE_TOK_PER_SEC, "local_apu"),
+    # beehive Ollama roster (CPU-bound, 18-25 tok/s band)
+    "ernie-fixed": (20.0, "local_apu"),
+    "qwen3.5:latest": (25.0, "local_apu"),
+    "glm4:9b": (18.0, "local_apu"),
+}
+
+# Ordered pattern rules — first match wins, so keep specific → generic.
+_THROUGHPUT_PATTERN_RULES = (
+    # chunkito / Strix Halo llama.cpp long-context serving queue
+    (("coder-next", "flash-next", "chunkito", "strix", "8060s", "262k", "128k",
+      "qwen3.8-27b", "qwen3-coder"), APU_DECODE_TOK_PER_SEC, "local_apu"),
+    # cloud pro / reasoning tiers
+    (("pro",), 60.0, "standard"),
+    (("opus",), 45.0, "standard"),
+    (("sonnet",), 65.0, "standard"),
+    (("haiku",), 105.0, "fast"),
+    (("flash",), 120.0, "fast"),
+    # local quant / GGUF / Ollama-tagged small models
+    (("gguf", ":q", ":iq", ":ud-", "ollama", ":latest", ":8b", ":9b", ":12b",
+      ":14b", ":20b", ":30b"), BEEHIVE_OLLAMA_TOK_PER_SEC, "local_apu"),
+)
+
+
+def model_throughput_profile(model_name: str, is_local: Optional[bool] = None) -> tuple:
+    """Return ``(throughput_tok_per_sec, throughput_tier)`` for a model.
+
+    Uses the empirical baseline table, then ordered pattern rules, then a
+    cloud/local default. Pure function of the model name so the analytics
+    payload stays deterministic and cache-friendly.
+    """
+    m = (model_name or "").strip().lower()
+    if is_local is None:
+        is_local = any(k in m for k in (
+            "qwen", "gemma", "deepseek", "gpt-oss", "gguf", "chunkito",
+            "llama", "mistral", "phi", "strix", "local", "ernie", "glm",
+            ":q8_", ":iq", ":ud-",
+        ))
+
+    if m in MODEL_THROUGHPUT_BASELINES:
+        tok, tier = MODEL_THROUGHPUT_BASELINES[m]
+        return float(tok), tier
+
+    for needles, tok, tier in _THROUGHPUT_PATTERN_RULES:
+        if any(n in m for n in needles):
+            return float(tok), tier
+
+    if is_local:
+        return LOCAL_DEFAULT_TOK_PER_SEC, "local_apu"
+    return CLOUD_DEFAULT_TOK_PER_SEC, "standard"
+
+
+# Longest-context local model advertised on the instrument cluster.
+LONGEST_CONTEXT_LOCAL_MODEL = "qwen3.8-flash-next:262k"
+
+
 class HermesReader:
     def __init__(self, db_path=HERMES_STATE_DB):
         self.db_path = Path(db_path)
@@ -597,6 +685,7 @@ class HermesReader:
         model_aggs: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
             "model": "",
             "session_ids": set(),
+            "turns_by_session": {},
             "api_call_count": 0,
             "input_tokens": 0,
             "output_tokens": 0,
@@ -609,6 +698,7 @@ class HermesReader:
 
         source_counts: Dict[str, int] = defaultdict(int)
         tool_counts: Dict[str, int] = defaultdict(int)
+        session_turn_counts: Dict[str, int] = {}
         daily_stats: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
             "session_count": 0,
             "total_tokens": 0,
@@ -638,6 +728,19 @@ class HermesReader:
                     cur.execute("SELECT COALESCE(source, 'cli') as source, COUNT(*) as cnt FROM sessions GROUP BY source")
                     for r in cur.fetchall():
                         source_counts[r["source"]] += r["cnt"]
+
+                    # Per-session turn (message) counts — used to derive turns_count
+                    # per model, since session_model_usage has no message_count column.
+                    try:
+                        if cutoff_ts is not None:
+                            cur.execute("SELECT id, message_count FROM sessions WHERE started_at >= ?", (cutoff_ts,))
+                        else:
+                            cur.execute("SELECT id, message_count FROM sessions")
+                        for r in cur.fetchall():
+                            if r["id"]:
+                                session_turn_counts[r["id"]] = (r["message_count"] or 0)
+                    except Exception:
+                        pass
 
                     # Daily activity (last 30 days)
                     cur.execute("""
@@ -701,6 +804,8 @@ class HermesReader:
                             e["model"] = m_name
                             if r["session_id"]:
                                 e["session_ids"].add(r["session_id"])
+                                # Aggregate turns from the parent session's message_count
+                                e["turns_by_session"][r["session_id"]] = session_turn_counts.get(r["session_id"], 0)
                             e["api_call_count"] += (r["api_call_count"] or 0)
                             e["input_tokens"] += (r["input_tokens"] or 0)
                             e["output_tokens"] += (r["output_tokens"] or 0)
@@ -752,6 +857,7 @@ class HermesReader:
                         e["model"] = m_name
                         if r["session_id"]:
                             e["session_ids"].add(r["session_id"])
+                            e["turns_by_session"][r["session_id"]] = session_turn_counts.get(r["session_id"], 0)
                         e["api_call_count"] += (r["api_call_count"] or 0)
                         e["input_tokens"] += (r["input_tokens"] or 0)
                         e["output_tokens"] += (r["output_tokens"] or 0)
@@ -776,13 +882,20 @@ class HermesReader:
                     except Exception:
                         pass
 
-        # Annotate model rows with is_local and readable provider tag
+        # Annotate model rows with is_local, turns and readable provider tag
         model_rows = []
         for m_name, d in model_aggs.items():
+            # turns_count = sum of message_count over the sessions that used this
+            # model; fall back to api_call_count when session rows are unavailable.
+            turns_count = sum(d["turns_by_session"].values())
+            if not turns_count:
+                turns_count = d["api_call_count"]
+            tok_s, tier = model_throughput_profile(m_name)
             model_rows.append({
                 "model": m_name,
                 "session_count": len(d["session_ids"]),
                 "api_call_count": d["api_call_count"],
+                "turns_count": int(turns_count),
                 "input_tokens": d["input_tokens"],
                 "output_tokens": d["output_tokens"],
                 "cache_read_tokens": d["cache_read_tokens"],
@@ -790,6 +903,8 @@ class HermesReader:
                 "reasoning_tokens": d["reasoning_tokens"],
                 "cost_usd": d["cost_usd"],
                 "billing_provider": d["billing_provider"],
+                "throughput_tok_per_sec": tok_s,
+                "throughput_tier": tier,
             })
         model_rows.sort(key=lambda x: (x["input_tokens"] + x["output_tokens"]), reverse=True)
 
@@ -819,6 +934,12 @@ class HermesReader:
             scnt = m.get("session_count") or 0
 
             is_local = self._is_local_model(m.get("model", ""), m.get("billing_provider", ""))
+
+            # Re-derive throughput now that the authoritative is_local flag is known,
+            # so unrecognised models land on the correct cloud/local baseline.
+            tok_s, tier = model_throughput_profile(m.get("model", ""), is_local=is_local)
+            m["throughput_tok_per_sec"] = tok_s
+            m["throughput_tier"] = tier
             
             # Reconcile via PricingEngine
             rec = pricing_engine.reconcile_usage(
@@ -908,6 +1029,27 @@ class HermesReader:
         spend_cap_pct = round(min(100.0, (current_month_cost / spend_cap) * 100), 1) if spend_cap > 0 else 0.0
         reconciled_delta = round(max(0.0, total_cost - total_raw_cost), 4)
 
+        # 7. Inference velocity summary (SPEC-HK-005)
+        fastest = max(
+            enhanced_models,
+            key=lambda x: (x.get("throughput_tok_per_sec", 0.0), x.get("model", "") == "gemini-3.8-flash"),
+            default=None,
+        ) if enhanced_models else None
+        local_model_names = {m.get("model", "") for m in enhanced_models if m.get("is_local")}
+        longest_ctx_local = (
+            LONGEST_CONTEXT_LOCAL_MODEL if LONGEST_CONTEXT_LOCAL_MODEL in local_model_names
+            else (max(sorted(local_model_names), key=lambda n: (":262k" in n.lower(), ":128k" in n.lower(), len(n)), default=None)
+                  or LONGEST_CONTEXT_LOCAL_MODEL)
+        )
+        inference_velocity_summary = {
+            "apu_decode_tok_per_sec": APU_DECODE_TOK_PER_SEC,
+            "apu_prefill_tok_per_sec": APU_PREFILL_TOK_PER_SEC,
+            "cloud_decode_tok_per_sec": CLOUD_DECODE_TOK_PER_SEC,
+            "local_zero_cost_ratio_pct": zero_cost_ratio,
+            "fastest_model": (fastest.get("model") if fastest else None) or "gemini-3.8-flash",
+            "longest_context_local_model": longest_ctx_local,
+        }
+
         return {
             "time_range": time_range,
             "total_sessions": total_sessions,
@@ -931,6 +1073,7 @@ class HermesReader:
             "cloud_tokens_total": cloud_tokens,
             "local_zero_cost_ratio_pct": zero_cost_ratio,
             "cache_hit_rate_pct": cache_hit_rate,
+            "inference_velocity_summary": inference_velocity_summary,
             "model_distribution": enhanced_models,
             "provider_distribution": provider_distribution,
             "source_distribution": sources,

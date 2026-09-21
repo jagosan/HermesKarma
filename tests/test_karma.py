@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from api.main import app
-from api.services.hermes_reader import hermes_reader
+from api.services.hermes_reader import hermes_reader, model_throughput_profile
 from api.services.metadata_service import metadata_service, MetadataService
 from api.services.live_tracker import LiveTracker
 from api.services.terminal_focus import terminal_focus_service
@@ -831,6 +831,61 @@ class TestHermesKarma(unittest.TestCase):
         self.assertIn("raw_stored_cost_usd", data)
         self.assertIn("reconciled_delta_usd", data)
         self.assertGreater(data["total_estimated_cost_usd"], 200.0)
+
+    def test_analytics_overview_model_turns_and_throughput(self):
+        """TASK-HK-105: every model row carries turns_count, output_tokens and throughput metadata."""
+        res = self.client.get("/api/analytics/overview?time_range=all")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        models = data.get("model_distribution") or []
+        self.assertGreater(len(models), 0)
+        for m in models:
+            self.assertIn("turns_count", m)
+            self.assertIsInstance(m["turns_count"], int)
+            self.assertGreaterEqual(m["turns_count"], 0)
+            self.assertIn("output_tokens", m)
+            self.assertIsInstance(m["output_tokens"], int)
+            self.assertIn("throughput_tok_per_sec", m)
+            self.assertIsInstance(m["throughput_tok_per_sec"], float)
+            self.assertGreater(m["throughput_tok_per_sec"], 0.0)
+            self.assertIn(m["throughput_tier"], ("ultra", "fast", "standard", "local_apu"))
+
+    def test_analytics_overview_inference_velocity_summary(self):
+        """TASK-HK-105: overview exposes the inference_velocity_summary block."""
+        res = self.client.get("/api/analytics/overview?time_range=all")
+        self.assertEqual(res.status_code, 200)
+        summary = res.json().get("inference_velocity_summary")
+        self.assertIsInstance(summary, dict)
+        self.assertEqual(summary["apu_decode_tok_per_sec"], 35.0)
+        self.assertEqual(summary["apu_prefill_tok_per_sec"], 294.0)
+        self.assertEqual(summary["cloud_decode_tok_per_sec"], 145.0)
+        self.assertIn("local_zero_cost_ratio_pct", summary)
+        self.assertGreaterEqual(summary["local_zero_cost_ratio_pct"], 0.0)
+        self.assertLessEqual(summary["local_zero_cost_ratio_pct"], 100.0)
+        self.assertIsInstance(summary["fastest_model"], str)
+        self.assertIsInstance(summary["longest_context_local_model"], str)
+
+    def test_model_throughput_profile_baselines(self):
+        """TASK-HK-105: empirical throughput baselines per pantheon roster model."""
+        expectations = {
+            "gemini-3.8-flash": (150.0, "ultra"),
+            "gemini-3.7-flash": (135.0, "fast"),
+            "gemini-3.5-flash": (110.0, "fast"),
+            "gemini-3.1-pro-preview": (60.0, "standard"),
+            "claude-3-opus": (45.0, "standard"),
+            "qwen3.8-flash-next:262k": (35.0, "local_apu"),
+            "qwen3-coder-next:262k": (35.0, "local_apu"),
+            "qwen3.8-27b": (35.0, "local_apu"),
+            "glm4:9b": (18.0, "local_apu"),
+            "ernie-fixed": (20.0, "local_apu"),
+            "qwen3.5:latest": (25.0, "local_apu"),
+        }
+        for name, (tok, tier) in expectations.items():
+            got = model_throughput_profile(name)
+            self.assertEqual(got, (tok, tier), f"throughput mismatch for {name}")
+        # Unknown cloud vs local fallbacks
+        self.assertEqual(model_throughput_profile("totally-unknown-cloud", is_local=False), (80.0, "standard"))
+        self.assertEqual(model_throughput_profile("totally unknown local", is_local=True), (25.0, "local_apu"))
 
     def test_nodes_cluster_telltales(self):
         """Verify node collector emits cluster_telltales for instrument gauges."""
