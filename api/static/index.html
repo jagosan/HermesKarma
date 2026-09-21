@@ -283,14 +283,14 @@
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <!-- Card 1 -->
-          <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm">
+          <!-- Card 1: Hero turns KPI (TASK-HK-110) -->
+          <div class="bg-dark-900 border border-indigo-500/30 rounded-xl p-5 shadow-sm ring-1 ring-indigo-500/10">
             <div class="flex justify-between items-start">
-              <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Sessions</span>
-              <span class="p-2 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20"><i data-lucide="message-circle" class="w-4 h-4"></i></span>
+              <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Turns &amp; Activity</span>
+              <span class="p-2 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20"><i data-lucide="messages-square" class="w-4 h-4"></i></span>
             </div>
-            <div id="statTotalSessions" class="text-2xl font-bold text-white mt-2">0</div>
-            <div id="statTotalMessages" class="text-xs text-slate-400 mt-1">0 total turns • 0 API calls</div>
+            <div id="statTotalMessages" class="text-3xl font-bold text-white mt-2 leading-tight">0 Turns</div>
+            <div id="statTurnsSub" class="text-xs text-slate-400 mt-1">0 sessions • 0 API calls</div>
           </div>
 
           <!-- Card 2 -->
@@ -324,8 +324,41 @@
           </div>
         </div>
 
+        <!-- Generation Velocity & Inference Throughput HUD (TASK-HK-111) -->
+        <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm">
+          <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
+            <h3 class="text-sm font-semibold text-white flex items-center space-x-2">
+              <i data-lucide="gauge" class="w-4 h-4 text-cyan-400"></i>
+              <span>Generation Velocity &amp; Inference Throughput</span>
+            </h3>
+            <span class="text-xs text-slate-400">TG = token generation · PP = prompt processing</span>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div class="rounded-lg border border-emerald-500/30 bg-emerald-950/40 px-4 py-3">
+              <div class="text-[10px] font-semibold uppercase tracking-wider text-emerald-300/80">Local APU Decode (TG)</div>
+              <div id="hudApuDecode" class="text-2xl font-bold font-mono text-emerald-300 mt-1">~35.0 <span class="text-xs font-medium text-emerald-400/70">tok/s</span></div>
+              <div class="text-[10px] text-slate-500 mt-0.5">chunkito Strix Halo · gfx1151</div>
+            </div>
+            <div class="rounded-lg border border-cyan-500/30 bg-cyan-950/40 px-4 py-3">
+              <div class="text-[10px] font-semibold uppercase tracking-wider text-cyan-300/80">Local APU Prefill (PP)</div>
+              <div id="hudApuPrefill" class="text-2xl font-bold font-mono text-cyan-300 mt-1">~294.0 <span class="text-xs font-medium text-cyan-400/70">tok/s</span></div>
+              <div class="text-[10px] text-slate-500 mt-0.5">prompt processing · llama.cpp server</div>
+            </div>
+            <div class="rounded-lg border border-indigo-500/30 bg-indigo-950/40 px-4 py-3">
+              <div class="text-[10px] font-semibold uppercase tracking-wider text-indigo-300/80">Cloud API Decode (TG)</div>
+              <div id="hudCloudDecode" class="text-2xl font-bold font-mono text-indigo-300 mt-1">~145.0 <span class="text-xs font-medium text-indigo-400/70">tok/s</span></div>
+              <div class="text-[10px] text-slate-500 mt-0.5">frontier-model aggregate reference</div>
+            </div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-slate-800/60">
+            <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Roster Records</span>
+            <span id="hudFastestModel" class="px-2 py-0.5 rounded-full text-[11px] font-mono bg-cyan-950/80 text-cyan-300 border border-cyan-500/30">⚡ Fastest: gemini-3.8-flash</span>
+            <span id="hudLongestContextModel" class="px-2 py-0.5 rounded-full text-[11px] font-mono bg-emerald-950/80 text-emerald-300 border border-emerald-500/30">🧠 Longest local context: qwen3.8-flash-next:262k</span>
+          </div>
+        </div>
+
         <!-- Charts Grid -->
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm">
             <h3 class="text-sm font-semibold text-white mb-4 flex items-center space-x-2">
               <i data-lucide="pie-chart" class="w-4 h-4 text-brand-400"></i>
@@ -333,6 +366,28 @@
             </h3>
             <div class="h-64 relative flex items-center justify-center">
               <canvas id="modelChart"></canvas>
+            </div>
+          </div>
+
+          <!-- TASK-HK-109: Output tokens doughnut -->
+          <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm">
+            <h3 class="text-sm font-semibold text-white mb-4 flex items-center space-x-2">
+              <i data-lucide="pie-chart" class="w-4 h-4 text-pink-400"></i>
+              <span>Model Output Token Distribution</span>
+            </h3>
+            <div class="h-64 relative flex items-center justify-center">
+              <canvas id="modelOutputChart"></canvas>
+            </div>
+          </div>
+
+          <!-- TASK-HK-112: Velocity comparator -->
+          <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm">
+            <h3 class="text-sm font-semibold text-white mb-4 flex items-center space-x-2">
+              <i data-lucide="gauge" class="w-4 h-4 text-cyan-400"></i>
+              <span>Model Generation Velocity (tok/s)</span>
+            </h3>
+            <div class="h-64 relative flex items-center justify-center">
+              <canvas id="velocityChart"></canvas>
             </div>
           </div>
 
@@ -346,7 +401,7 @@
             </div>
           </div>
 
-          <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm">
+          <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm lg:col-span-2">
             <h3 class="text-sm font-semibold text-white mb-4 flex items-center space-x-2">
               <i data-lucide="wrench" class="w-4 h-4 text-indigo-400"></i>
               <span>Tool Execution Frequencies</span>
@@ -369,12 +424,14 @@
                 <tr class="border-b border-slate-800 text-slate-400 uppercase bg-dark-950/40">
                   <th class="py-2.5 px-3">Model Name</th>
                   <th class="py-2.5 px-3">Provider</th>
+                  <th class="py-2.5 px-3">Turns</th>
                   <th class="py-2.5 px-3">Sessions</th>
                   <th class="py-2.5 px-3">API Calls</th>
                   <th class="py-2.5 px-3">Prompt Tokens</th>
                   <th class="py-2.5 px-3">Completion Tokens</th>
                   <th class="py-2.5 px-3">KV Cache Read</th>
                   <th class="py-2.5 px-3">Reasoning</th>
+                  <th class="py-2.5 px-3">Throughput (tok/s)</th>
                   <th class="py-2.5 px-3">Est. Cost</th>
                 </tr>
               </thead>
@@ -981,7 +1038,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=2.2.0"></script>
+  <script src="/static/app.js?v=2.3.0"></script>
     <!-- Mobile drawer overlay (tap to close) -->
     <div id="mobile-drawer-overlay" onclick="closeMobileMenu()" class="fixed inset-0 bg-black/60 z-40 hidden md:hidden" aria-hidden="true"></div>
 

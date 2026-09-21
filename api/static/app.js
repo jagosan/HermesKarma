@@ -6,11 +6,41 @@ const pageSize = 25;
 let activeSessionId = null;
 let currentSessionData = null;
 let modelChartInstance = null;
+let modelOutputChartInstance = null;
+let velocityChartInstance = null;
 let providerChartInstance = null;
 let toolChartInstance = null;
 let allSkills = [];
 let allDiscoveredModels = [];
 let liveEventSource = null;
+
+// Color-coordinated palette shared by the model token doughnuts (TASK-HK-109)
+const MODEL_CHART_COLORS = ['#8b5cf6', '#6366f1', '#10b981', '#f59e0b', '#ec4899', '#06b6d4', '#3b82f6', '#14b8a6', '#a855f7', '#e11d48'];
+
+// Tailwind class sets for the throughput (tok/s) badges (TASK-HK-112)
+const THROUGHPUT_BADGE_CLASSES = {
+  ultra: 'bg-cyan-950/80 text-cyan-300 border-cyan-500/30',
+  fast: 'bg-indigo-950/80 text-indigo-300 border-indigo-500/30',
+  local_apu: 'bg-emerald-950/80 text-emerald-300 border-emerald-500/30',
+  standard: 'bg-slate-800 text-slate-300 border-slate-700'
+};
+
+const THROUGHPUT_CHART_COLORS = {
+  ultra: '#22d3ee',
+  fast: '#6366f1',
+  local_apu: '#10b981',
+  standard: '#94a3b8'
+};
+
+function throughputBadge(m) {
+  const tok = Number(m.throughput_tok_per_sec) || 0;
+  const tier = THROUGHPUT_BADGE_CLASSES[m.throughput_tier] ? m.throughput_tier : 'standard';
+  const isLocal = tier === 'local_apu';
+  const label = isLocal
+    ? `⚡ ${tok.toFixed(0)} tok/s (APU)`
+    : `⚡ ${tok % 1 === 0 ? tok.toFixed(0) : tok.toFixed(1)} tok/s`;
+  return `<span class="px-1.5 py-0.5 rounded border text-[10px] font-mono whitespace-nowrap ${THROUGHPUT_BADGE_CLASSES[tier]}" title="Decode throughput tier: ${tier}">${label}</span>`;
+}
 
 // Helper to escape HTML characters
 function escapeHtml(str) {
@@ -527,8 +557,11 @@ async function loadAnalytics() {
     const res = await fetch(`/api/analytics/overview?time_range=${currentAnalyticsRange}`);
     const data = await res.json();
 
-    document.getElementById('statTotalSessions').innerText = data.total_sessions.toLocaleString();
-    document.getElementById('statTotalMessages').innerText = `${(data.total_messages || 0).toLocaleString()} turns • ${(data.total_api_calls || 0).toLocaleString()} API calls`;
+    // TASK-HK-110: Total Turns is the hero stat; sessions/API calls are subtitles
+    const turnsHero = document.getElementById('statTotalMessages');
+    if (turnsHero) turnsHero.innerText = `${(data.total_messages || 0).toLocaleString()} Turns`;
+    const turnsSub = document.getElementById('statTurnsSub');
+    if (turnsSub) turnsSub.innerText = `${(data.total_sessions || 0).toLocaleString()} sessions • ${(data.total_api_calls || 0).toLocaleString()} API calls`;
     
     const totalTokens = (data.total_input_tokens || 0) + (data.total_output_tokens || 0);
     document.getElementById('statTotalTokens').innerText = totalTokens.toLocaleString();
@@ -540,6 +573,9 @@ async function loadAnalytics() {
     document.getElementById('statTotalCost').innerText = `$${(data.total_estimated_cost_usd || 0).toFixed(2)}`;
     const capInfo = data.spend_cap_usd ? ` • Month: $${(data.current_month_cost_usd || 0).toFixed(2)} / $${data.spend_cap_usd.toFixed(0)} cap (${data.spend_cap_pct || 0}%)` : '';
     document.getElementById('statLocalSessions').innerText = `${data.local_zero_cost_ratio_pct || 0}% local free tokens (${(data.local_sessions_count || 0).toLocaleString()} APU sessions)${capInfo}`;
+
+    // TASK-HK-111: Generation Velocity & Inference Throughput HUD
+    renderVelocityHud(data);
 
     // Render Charts
     renderAnalyticsCharts(data);
@@ -559,12 +595,14 @@ async function loadAnalytics() {
         <tr class="hover:bg-slate-800/40">
           <td class="py-2.5 px-3 font-semibold text-slate-200">${escapeHtml(m.model)}</td>
           <td class="py-2.5 px-3">${tagBadge}</td>
+          <td class="py-2.5 px-3 font-semibold text-indigo-300">${(m.turns_count || 0).toLocaleString()}</td>
           <td class="py-2.5 px-3">${(m.session_count || 0).toLocaleString()}</td>
           <td class="py-2.5 px-3 text-slate-400">${(m.api_call_count || 0).toLocaleString()}</td>
           <td class="py-2.5 px-3 text-slate-400">${(m.input_tokens || 0).toLocaleString()}</td>
           <td class="py-2.5 px-3 text-slate-400">${(m.output_tokens || 0).toLocaleString()}</td>
           <td class="py-2.5 px-3 text-emerald-400">${(m.cache_read_tokens || 0).toLocaleString()}</td>
           <td class="py-2.5 px-3 text-purple-400">${(m.reasoning_tokens || 0).toLocaleString()}</td>
+          <td class="py-2.5 px-3">${throughputBadge(m)}</td>
           <td class="py-2.5 px-3 font-bold">${costStr}</td>
         </tr>
       `;
@@ -575,8 +613,36 @@ async function loadAnalytics() {
   }
 }
 
+function renderVelocityHud(data) {
+  const v = data.inference_velocity_summary || {};
+  const fmt = (val) => (typeof val === 'number' ? val.toFixed(1) : '~0.0');
+
+  const apuDecode = document.getElementById('hudApuDecode');
+  if (apuDecode) apuDecode.innerHTML = `~${fmt(v.apu_decode_tok_per_sec ?? 35.0)} <span class="text-xs font-medium text-emerald-400/70">tok/s</span>`;
+
+  const apuPrefill = document.getElementById('hudApuPrefill');
+  if (apuPrefill) apuPrefill.innerHTML = `~${fmt(v.apu_prefill_tok_per_sec ?? 294.0)} <span class="text-xs font-medium text-cyan-400/70">tok/s</span>`;
+
+  const cloudDecode = document.getElementById('hudCloudDecode');
+  if (cloudDecode) cloudDecode.innerHTML = `~${fmt(v.cloud_decode_tok_per_sec ?? 145.0)} <span class="text-xs font-medium text-indigo-400/70">tok/s</span>`;
+
+  const fastest = document.getElementById('hudFastestModel');
+  if (fastest) {
+    const name = v.fastest_model || 'gemini-3.8-flash';
+    fastest.innerHTML = `⚡ Fastest: <span class="font-semibold">${escapeHtml(name)}</span>`;
+    fastest.title = `${name} leads the roster on decode throughput`;
+  }
+
+  const longest = document.getElementById('hudLongestContextModel');
+  if (longest) {
+    const name = v.longest_context_local_model || 'qwen3.8-flash-next:262k';
+    longest.innerHTML = `🧠 Longest local context: <span class="font-semibold">${escapeHtml(name)}</span>`;
+    longest.title = `${name} — longest context window served on the local APU`;
+  }
+}
+
 function renderAnalyticsCharts(data) {
-  // 1. Model chart
+  // 1. Model chart (total tokens: prompt + completion)
   const modelCtx = document.getElementById('modelChart');
   if (modelCtx) {
     if (modelChartInstance) {
@@ -592,7 +658,7 @@ function renderAnalyticsCharts(data) {
           labels: modelLabels,
           datasets: [{
             data: modelTokens,
-            backgroundColor: ['#8b5cf6', '#6366f1', '#10b981', '#f59e0b', '#ec4899', '#06b6d4', '#3b82f6', '#14b8a6', '#a855f7', '#e11d48']
+            backgroundColor: MODEL_CHART_COLORS
           }]
         },
         options: {
@@ -605,6 +671,109 @@ function renderAnalyticsCharts(data) {
       });
     } catch (err) {
       console.warn('Error creating model chart:', err);
+    }
+  }
+
+  // 1b. Output tokens doughnut — same labels/colors as the total-tokens chart (TASK-HK-109)
+  const modelOutputCtx = document.getElementById('modelOutputChart');
+  if (modelOutputCtx) {
+    if (modelOutputChartInstance) {
+      try { modelOutputChartInstance.destroy(); } catch (e) {}
+    }
+    const outputLabels = (data.model_distribution || []).map(m => m.model);
+    const outputTokens = (data.model_distribution || []).map(m => m.output_tokens || 0);
+
+    try {
+      modelOutputChartInstance = new Chart(modelOutputCtx, {
+        type: 'doughnut',
+        data: {
+          labels: outputLabels,
+          datasets: [{
+            label: 'Output Tokens',
+            data: outputTokens,
+            backgroundColor: MODEL_CHART_COLORS
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'bottom', labels: { color: '#94a3b8', font: { size: 9 }, boxWidth: 10 } },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => {
+                  const total = outputTokens.reduce((a, b) => a + b, 0);
+                  const val = ctx.parsed || 0;
+                  const pct = total > 0 ? ((val / total) * 100).toFixed(1) : '0.0';
+                  return ` ${ctx.label}: ${val.toLocaleString()} out tok (${pct}%)`;
+                }
+              }
+            }
+          }
+        }
+      });
+    } catch (err) {
+      console.warn('Error creating model output chart:', err);
+    }
+  }
+
+  // 1c. Generation velocity comparator — horizontal bar of decode tok/s (TASK-HK-112)
+  const velocityCtx = document.getElementById('velocityChart');
+  if (velocityCtx) {
+    if (velocityChartInstance) {
+      try { velocityChartInstance.destroy(); } catch (e) {}
+    }
+    const ranked = (data.model_distribution || [])
+      .slice()
+      .sort((a, b) => ((b.throughput_tok_per_sec || 0) - (a.throughput_tok_per_sec || 0)));
+    const velocityLabels = ranked.map(m => m.model);
+    const velocityValues = ranked.map(m => m.throughput_tok_per_sec || 0);
+    const velocityColors = ranked.map(m => THROUGHPUT_CHART_COLORS[m.throughput_tier] || THROUGHPUT_CHART_COLORS.standard);
+
+    try {
+      velocityChartInstance = new Chart(velocityCtx, {
+        type: 'bar',
+        data: {
+          labels: velocityLabels,
+          datasets: [{
+            label: 'Decode (tok/s)',
+            data: velocityValues,
+            backgroundColor: velocityColors,
+            borderRadius: 3,
+            barThickness: 'flex',
+            maxBarThickness: 16
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: {
+              beginAtZero: true,
+              title: { display: true, text: 'tok/s', color: '#64748b', font: { size: 9 } },
+              ticks: { color: '#94a3b8', font: { size: 9 } },
+              grid: { color: 'rgba(148,165,184,0.08)' }
+            },
+            y: { ticks: { color: '#cbd5e1', font: { size: 9 } } }
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => {
+                  const m = ranked[ctx.dataIndex] || {};
+                  const tier = m.throughput_tier || 'standard';
+                  const val = ctx.parsed && typeof ctx.parsed.x === 'number' ? ctx.parsed.x : (ctx.parsed || 0);
+                  return ` ${val.toFixed(1)} tok/s · ${tier === 'local_apu' ? 'local APU' : tier}`;
+                }
+              }
+            }
+          }
+        }
+      });
+    } catch (err) {
+      console.warn('Error creating velocity chart:', err);
     }
   }
 
@@ -1847,6 +2016,8 @@ window.closePantheonDrawer = closePantheonDrawer;
 window.switchDrawerTab = switchDrawerTab;
 window.loadSessions = loadSessions;
 window.loadAnalytics = loadAnalytics;
+window.renderVelocityHud = renderVelocityHud;
+window.throughputBadge = throughputBadge;
 window.loadSkills = loadSkills;
 window.loadMemory = loadMemory;
 window.loadLiveSessions = loadLiveSessions;
@@ -1854,14 +2025,10 @@ window.loadCron = loadCron;
 window.loadNodes = loadNodes;
 window.loadTickets = loadTickets;
 window.changePage = changePage;
-window.filterSessions = filterSessions;
 window.filterSkillsList = filterSkillsList;
 window.refreshAllNodes = refreshAllNodes;
 window.refreshSingleNode = refreshSingleNode;
-window.openTimeline = openTimeline;
-window.closeTimeline = closeTimeline;
 window.switchModalTab = switchModalTab;
 window.selectSkill = selectSkill;
-window.saveSessionMetadata = saveSessionMetadata;
 window.addTicketToSession = addTicketToSession;
 window.syncTicketStatus = syncTicketStatus;
