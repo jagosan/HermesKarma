@@ -901,6 +901,35 @@ class TestHermesKarma(unittest.TestCase):
             self.assertIn("active_slots", tt)
             self.assertIn("is_generating", tt)
 
+    def test_nodes_gpu_history(self):
+        """SPEC-HK-006: Verify GET /api/nodes/history timeseries endpoint."""
+        res = self.client.get("/api/nodes/history?time_range=30d")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["time_range"], "30d")
+        self.assertIn("nodes", data)
+        # Should have generated backfill data
+        self.assertTrue(len(data["nodes"].get("chunkito", [])) > 0)
+        sample = data["nodes"]["chunkito"][0]
+        self.assertIn("timestamp", sample)
+        self.assertIn("gpu_busy_percent", sample)
+        self.assertIn("power_w", sample)
+        self.assertIn("active_slots", sample)
+
+    def test_analytics_temporal_usage(self):
+        """SPEC-HK-006: Verify temporal_usage structure in analytics overview."""
+        res = self.client.get("/api/analytics/overview?time_range=30d")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("temporal_usage", data)
+        tu = data["temporal_usage"]
+        self.assertEqual(tu["time_range"], "30d")
+        self.assertEqual(tu["bucket_type"], "day")
+        self.assertTrue(isinstance(tu["buckets"], list))
+        self.assertTrue(isinstance(tu["models"], list))
+        self.assertIn("series", tu)
+        self.assertIn("input_tokens", tu["series"])
+        self.assertIn("cost_usd", tu["series"])
 
 if __name__ == "__main__":
     unittest.main()

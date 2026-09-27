@@ -272,6 +272,10 @@ class HermesReader:
         date_from: Optional[float] = None,
         date_to: Optional[float] = None,
     ) -> Dict[str, Any]:
+        import time
+        if date_from is None and not search and not source and not persona:
+            date_from = time.time() - (30 * 86400)
+
         all_candidates = []
         seen_ids = set()
 
@@ -655,7 +659,7 @@ class HermesReader:
                 delegations.append(d)
             return delegations
 
-    def get_analytics_overview(self, time_range: str = "all") -> Dict[str, Any]:
+    def get_analytics_overview(self, time_range: str = "30d") -> Dict[str, Any]:
         """Aggregate total tokens, costs, models, and tools with full multi-model and local vs cloud precision across all state databases."""
         import time
         from collections import defaultdict
@@ -1014,6 +1018,125 @@ class HermesReader:
         # 6. Daily activity (last 30 days)
         daily = [{"date": k, "session_count": v["session_count"], "total_tokens": v["total_tokens"], "daily_cost": v["daily_cost"]} for k, v in sorted(daily_stats.items(), key=lambda x: x[0])]
 
+        # --- SPEC-HK-006: AI Studio Temporal Usage Data Contract ---
+        bucket_type = "hour" if time_range in ("today", "24h", "1d") else "day"
+        if bucket_type == "hour":
+            sql_bucket = "strftime('%Y-%m-%d %H:00', datetime(last_seen, 'unixepoch', 'localtime'))"
+        else:
+            sql_bucket = "strftime('%Y-%m-%d', datetime(last_seen, 'unixepoch', 'localtime'))"
+
+        temporal_map: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
+            "input": defaultdict(int),
+            "output": defaultdict(int),
+            "cost": defaultdict(float),
+            "reasoning": defaultdict(int)
+        })
+        temporal_models = set()
+
+        for db_path in self._get_all_state_dbs():
+            conn = self._get_ro_conn_for_db(db_path)
+            if not conn: continue
+            with conn:
+                cur = conn.cursor()
+                tables = [r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+                if "session_model_usage" in tables:
+                    if cutoff_ts is not None:
+                        cur.execute(f"""
+                            SELECT 
+                                {sql_bucket} as bucket,
+                                COALESCE(model, 'Unknown') as model,
+                                COALESCE(billing_provider, '') as billing_provider,
+                                SUM(input_tokens) as inp,
+                                SUM(output_tokens) as out,
+                                SUM(reasoning_tokens) as reas,
+                                SUM(estimated_cost_usd) as stored_cost
+                            FROM session_model_usage
+                            WHERE last_seen >= ?
+                            GROUP BY bucket, model, billing_provider
+                        """, (cutoff_ts,))
+                    else:
+                        cur.execute(f"""
+                            SELECT 
+                                {sql_bucket} as bucket,
+                                COALESCE(model, 'Unknown') as model,
+                                COALESCE(billing_provider, '') as billing_provider,
+                                SUM(input_tokens) as inp,
+                                SUM(output_tokens) as out,
+                                SUM(reasoning_tokens) as reas,
+                                SUM(estimated_cost_usd) as stored_cost
+                            FROM session_model_usage
+                            GROUP BY bucket, model, billing_provider
+                        """)
+                    for r in cur.fetchall():
+                        b = r["bucket"]
+                        if not b: continue
+                        m = r["model"]
+                        temporal_models.add(m)
+                        
+                        rec = pricing_engine.reconcile_usage(
+                            model_name=m,
+                            input_tokens=(r["inp"] or 0),
+                            output_tokens=(r["out"] or 0),
+                            cache_read_tokens=0,
+                            cache_write_tokens=0,
+                            reasoning_tokens=(r["reas"] or 0),
+                            stored_cost_usd=(r["stored_cost"] or 0.0),
+                            billing_provider=r["billing_provider"]
+                        )
+                        temporal_map[b]["input"][m] += (r["inp"] or 0)
+                        temporal_map[b]["output"][m] += (r["out"] or 0)
+                        temporal_map[b]["cost"][m] += rec.cost_usd
+
+        # Create continuous timeline buckets
+        import datetime
+        temporal_buckets = []
+        temporal_labels = []
+        if bucket_type == "hour":
+            start_dt = now_dt - datetime.timedelta(hours=24)
+            start_dt = start_dt.replace(minute=0, second=0, microsecond=0)
+            for i in range(25):
+                dt = start_dt + datetime.timedelta(hours=i)
+                temporal_buckets.append(dt.strftime("%Y-%m-%d %H:00"))
+                temporal_labels.append(dt.strftime("%H:00"))
+        else:
+            days = 30 if time_range in ("30d", "30days", "month", "this_month") else (7 if time_range in ("7d", "7days", "week") else 30)
+            start_dt = now_dt - datetime.timedelta(days=days)
+            for i in range(days + 1):
+                dt = start_dt + datetime.timedelta(days=i)
+                temporal_buckets.append(dt.strftime("%Y-%m-%d"))
+                temporal_labels.append(dt.strftime("%b %d"))
+
+        series_inp = defaultdict(list)
+        series_out = defaultdict(list)
+        series_cost = defaultdict(list)
+        series_total = defaultdict(list)
+        sorted_temporal_models = sorted(list(temporal_models))
+
+        for b in temporal_buckets:
+            b_data = temporal_map.get(b, {})
+            for m in sorted_temporal_models:
+                i_val = b_data.get("input", {}).get(m, 0)
+                o_val = b_data.get("output", {}).get(m, 0)
+                c_val = b_data.get("cost", {}).get(m, 0.0)
+                series_inp[m].append(i_val)
+                series_out[m].append(o_val)
+                series_cost[m].append(round(c_val, 4))
+                series_total[m].append(i_val + o_val)
+
+        temporal_usage = {
+            "bucket_type": bucket_type,
+            "time_range": time_range,
+            "buckets": temporal_buckets,
+            "labels": temporal_labels,
+            "models": sorted_temporal_models,
+            "series": {
+                "input_tokens": dict(series_inp),
+                "output_tokens": dict(series_out),
+                "cost_usd": dict(series_cost),
+                "total_tokens": dict(series_total)
+            }
+        }
+
         # KV Cache hit rate calculation
         total_prompt_processed = total_input + total_cache_read
         cache_hit_rate = round((total_cache_read / total_prompt_processed * 100), 2) if total_prompt_processed > 0 else 0.0
@@ -1073,6 +1196,7 @@ class HermesReader:
             "cloud_tokens_total": cloud_tokens,
             "local_zero_cost_ratio_pct": zero_cost_ratio,
             "cache_hit_rate_pct": cache_hit_rate,
+            "temporal_usage": temporal_usage,
             "inference_velocity_summary": inference_velocity_summary,
             "model_distribution": enhanced_models,
             "provider_distribution": provider_distribution,
