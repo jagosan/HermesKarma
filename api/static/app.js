@@ -120,6 +120,22 @@ function switchTab(tabId) {
 // SESSIONS VIEW
 // ----------------------------------------------------
 let searchTimeout = null;
+let currentSessionsTimeRange = '30d';
+
+function setSessionsTimeRange(range) {
+  currentSessionsTimeRange = range;
+  document.querySelectorAll('.sessions-time-btn').forEach(btn => {
+    if (btn.getAttribute('data-range') === range) {
+      btn.className = 'sessions-time-btn px-2.5 py-1 rounded font-medium transition bg-brand-500/20 text-brand-300 border border-brand-500/30';
+    } else {
+      btn.className = 'sessions-time-btn px-2.5 py-1 rounded font-medium transition text-slate-400 hover:text-white';
+    }
+  });
+  currentPage = 0;
+  loadSessions();
+}
+window.setSessionsTimeRange = setSessionsTimeRange;
+
 function debounceLoadSessions() {
   clearTimeout(searchTimeout);
   searchTimeout = setTimeout(() => {
@@ -156,6 +172,19 @@ async function loadSessions() {
   if (platform) params.append('source', platform);
   if (model) params.append('model', model);
   if (persona) params.append('persona', persona);
+  
+  if (currentSessionsTimeRange && currentSessionsTimeRange !== 'all') {
+    const now = Math.floor(Date.now() / 1000);
+    let cutoff = now;
+    if (currentSessionsTimeRange === '24h' || currentSessionsTimeRange === 'today') {
+      cutoff -= 86400;
+    } else if (currentSessionsTimeRange === '7d') {
+      cutoff -= 7 * 86400;
+    } else if (currentSessionsTimeRange === '30d') {
+      cutoff -= 30 * 86400;
+    }
+    params.append('date_from', cutoff);
+  }
 
   try {
     const res = await fetch(`/api/sessions?${params.toString()}`);
@@ -537,7 +566,23 @@ async function triggerFocusActive() {
 // ----------------------------------------------------
 // ANALYTICS VIEW
 // ----------------------------------------------------
-let currentAnalyticsRange = 'all';
+let currentAnalyticsRange = '30d';
+let currentTemporalMetric = 'input_tokens'; // SPEC-HK-006
+
+async function setTemporalMetric(metric) {
+  currentTemporalMetric = metric;
+  document.querySelectorAll('.temporal-metric-btn').forEach(btn => {
+    if (btn.getAttribute('data-metric') === metric) {
+      btn.className = 'temporal-metric-btn px-3 py-1 rounded font-medium transition bg-brand-500/20 text-brand-300 border border-brand-500/30';
+    } else {
+      btn.className = 'temporal-metric-btn px-3 py-1 rounded font-medium transition text-slate-400 hover:text-white';
+    }
+  });
+  if (window.lastAnalyticsData) {
+    renderTemporalUsageChart(window.lastAnalyticsData);
+  }
+}
+window.setTemporalMetric = setTemporalMetric;
 
 async function setAnalyticsTimeRange(range) {
   currentAnalyticsRange = range;
@@ -556,6 +601,7 @@ async function loadAnalytics() {
   try {
     const res = await fetch(`/api/analytics/overview?time_range=${currentAnalyticsRange}`);
     const data = await res.json();
+    window.lastAnalyticsData = data;
 
     // TASK-HK-110: Total Turns is the hero stat; sessions/API calls are subtitles
     const turnsHero = document.getElementById('statTotalMessages');
@@ -579,6 +625,7 @@ async function loadAnalytics() {
 
     // Render Charts
     renderAnalyticsCharts(data);
+    renderTemporalUsageChart(data);
 
     // Render Models Table
     const tbody = document.getElementById('modelsTableBody');
@@ -849,6 +896,104 @@ function renderAnalyticsCharts(data) {
     } catch (err) {
       console.warn('Error creating tool chart:', err);
     }
+  }
+}
+
+// ----------------------------------------------------
+// SPEC-HK-006: TEMPORAL USAGE & COST ANALYZER
+// ----------------------------------------------------
+let temporalUsageChartInstance = null;
+
+function renderTemporalUsageChart(data) {
+  const ctx = document.getElementById('temporalUsageChart');
+  if (!ctx) return;
+  if (!data.temporal_usage) return;
+  
+  if (temporalUsageChartInstance) {
+    try { temporalUsageChartInstance.destroy(); } catch (e) {}
+  }
+
+  const tData = data.temporal_usage;
+  const labels = tData.labels;
+  const metric = currentTemporalMetric || 'input_tokens';
+  const seriesDict = tData.series[metric] || {};
+  
+  const datasets = [];
+  tData.models.forEach((m, idx) => {
+    const rawData = seriesDict[m] || [];
+    // Only include if model has any data in this window
+    if (rawData.some(v => v > 0)) {
+      datasets.push({
+        label: m,
+        data: rawData,
+        backgroundColor: MODEL_CHART_COLORS[idx % MODEL_CHART_COLORS.length],
+        borderWidth: 0,
+        fill: true,
+      });
+    }
+  });
+
+  const titleMap = {
+    'input_tokens': 'Input Tokens (Prompt)',
+    'output_tokens': 'Output Tokens (Completion)',
+    'cost_usd': 'Accrued Cost ($)',
+    'total_tokens': 'Total Tokens (Input + Output)'
+  };
+  
+  const isCost = metric === 'cost_usd';
+
+  try {
+    temporalUsageChartInstance = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: datasets
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: { 
+            stacked: true,
+            ticks: { color: '#94a3b8', font: { size: 10 } },
+            grid: { color: '#1e293b' }
+          },
+          y: { 
+            stacked: true,
+            ticks: { 
+              color: '#94a3b8', 
+              font: { size: 10 },
+              callback: function(value) {
+                if (isCost) return '$' + value.toFixed(2);
+                if (value >= 1000000) return (value / 1000000).toFixed(1) + 'M';
+                if (value >= 1000) return (value / 1000).toFixed(1) + 'k';
+                return value;
+              }
+            },
+            grid: { color: '#1e293b' }
+          }
+        },
+        plugins: {
+          legend: { position: 'bottom', labels: { color: '#cbd5e1', font: { size: 10 }, boxWidth: 12, usePointStyle: true } },
+          tooltip: {
+            mode: 'index',
+            intersect: false,
+            callbacks: {
+              label: (context) => {
+                let val = context.parsed.y;
+                return ` ${context.dataset.label}: ${isCost ? '$' + val.toFixed(4) : val.toLocaleString()}`;
+              },
+              footer: (tooltipItems) => {
+                let total = tooltipItems.reduce((sum, item) => sum + item.parsed.y, 0);
+                return `\nTotal: ${isCost ? '$' + total.toFixed(4) : total.toLocaleString()}`;
+              }
+            }
+          }
+        }
+      }
+    });
+  } catch (err) {
+    console.warn('Error creating temporal usage chart:', err);
   }
 }
 
@@ -1308,7 +1453,120 @@ function updateFleetStatusIndicators(nodes) {
 // ----------------------------------------------------
 // FLEET & NODES TELEMETRY VIEW (BTOP & AMDGPU_TOP DASHBOARD)
 // ----------------------------------------------------
+let fleetGpuHistoryChartInstance = null;
+let currentFleetGpuTimeRange = '30d';
+
+async function setFleetGpuTimeRange(range) {
+  currentFleetGpuTimeRange = range;
+  document.querySelectorAll('.fleet-gpu-btn').forEach(btn => {
+    if (btn.getAttribute('data-range') === range) {
+      btn.className = 'fleet-gpu-btn px-3 py-1 rounded font-medium transition bg-brand-500/20 text-brand-300 border border-brand-500/30';
+    } else {
+      btn.className = 'fleet-gpu-btn px-3 py-1 rounded font-medium transition text-slate-400 hover:text-white';
+    }
+  });
+  loadFleetGpuHistory();
+}
+window.setFleetGpuTimeRange = setFleetGpuTimeRange;
+
+async function loadFleetGpuHistory() {
+  const ctx = document.getElementById('fleetGpuHistoryChart');
+  if (!ctx) return;
+
+  try {
+    const res = await fetch(`/api/nodes/history?time_range=${currentFleetGpuTimeRange}`);
+    const data = await res.json();
+
+    if (fleetGpuHistoryChartInstance) {
+      try { fleetGpuHistoryChartInstance.destroy(); } catch(e) {}
+    }
+
+    const chunkito = data.nodes['chunkito'] || [];
+    if (chunkito.length === 0) return;
+
+    const labels = chunkito.map(s => {
+      // Shorten label based on range
+      if (currentFleetGpuTimeRange === '24h' || currentFleetGpuTimeRange === 'today') {
+        const parts = s.datetime.split(' ');
+        return parts.length > 1 ? parts[1] : s.datetime;
+      }
+      return s.datetime.split(' ')[0];
+    });
+
+    const busyData = chunkito.map(s => s.gpu_busy_percent);
+    const powerData = chunkito.map(s => s.power_w);
+
+    fleetGpuHistoryChartInstance = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            label: 'GPU Core Busy (%)',
+            data: busyData,
+            borderColor: '#06b6d4',
+            backgroundColor: 'rgba(6, 182, 212, 0.1)',
+            borderWidth: 2,
+            pointRadius: 0,
+            pointHitRadius: 10,
+            fill: true,
+            yAxisID: 'y'
+          },
+          {
+            label: 'Power Draw (W)',
+            data: powerData,
+            borderColor: '#f59e0b',
+            borderWidth: 1,
+            borderDash: [5, 5],
+            pointRadius: 0,
+            pointHitRadius: 10,
+            fill: false,
+            yAxisID: 'y1'
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: {
+          mode: 'index',
+          intersect: false,
+        },
+        scales: {
+          x: { 
+            ticks: { color: '#94a3b8', font: { size: 10 } },
+            grid: { color: '#1e293b' }
+          },
+          y: { 
+            type: 'linear',
+            display: true,
+            position: 'left',
+            min: 0,
+            max: 100,
+            ticks: { color: '#06b6d4', font: { size: 10 }, callback: v => v + '%' },
+            grid: { color: '#1e293b' }
+          },
+          y1: {
+            type: 'linear',
+            display: true,
+            position: 'right',
+            min: 0,
+            ticks: { color: '#f59e0b', font: { size: 10 }, callback: v => v + ' W' },
+            grid: { drawOnChartArea: false }
+          }
+        },
+        plugins: {
+          legend: { position: 'bottom', labels: { color: '#cbd5e1', font: { size: 10 }, usePointStyle: true } }
+        }
+      }
+    });
+  } catch(err) {
+    console.warn('Error loading fleet GPU history:', err);
+  }
+}
+
 async function loadNodes(force = false) {
+  loadFleetGpuHistory();
   try {
     const res = await fetch(`/api/nodes?force_refresh=${force}`);
     const data = await res.json();

@@ -211,14 +211,24 @@
           </div>
 
           <!-- Channel Pills -->
-          <div class="flex items-center space-x-2 text-xs pt-1 border-t border-slate-800/60 overflow-x-auto pb-1">
-            <span class="text-slate-400 font-medium mr-1">Quick Filter:</span>
-            <button onclick="setPlatformFilter('')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">All</button>
-            <button onclick="setPlatformFilter('cli')" class="px-2.5 py-1 rounded bg-slate-800/60 hover:bg-slate-700 text-slate-300 flex items-center space-x-1"><i data-lucide="terminal" class="w-3 h-3"></i><span>CLI</span></button>
-            <button onclick="setPlatformFilter('webui')" class="px-2.5 py-1 rounded bg-slate-800/60 hover:bg-slate-700 text-slate-300 flex items-center space-x-1"><i data-lucide="globe" class="w-3 h-3"></i><span>WebUI</span></button>
-            <button onclick="setPlatformFilter('subagent')" class="px-2.5 py-1 rounded bg-amber-950/60 border border-amber-500/30 hover:bg-amber-900/60 text-amber-300 flex items-center space-x-1"><i data-lucide="bot" class="w-3 h-3"></i><span>Swarm Subagents</span></button>
-            <button onclick="setPlatformFilter('telegram')" class="px-2.5 py-1 rounded bg-slate-800/60 hover:bg-slate-700 text-slate-300 flex items-center space-x-1"><i data-lucide="send" class="w-3 h-3"></i><span>Telegram</span></button>
-            <button onclick="setPlatformFilter('cron')" class="px-2.5 py-1 rounded bg-slate-800/60 hover:bg-slate-700 text-slate-300 flex items-center space-x-1"><i data-lucide="clock" class="w-3 h-3"></i><span>Cron</span></button>
+          <div class="flex items-center justify-between border-t border-slate-800/60 pt-3">
+            <div class="flex items-center space-x-2 text-xs overflow-x-auto pb-1">
+              <span class="text-slate-400 font-medium mr-1">Quick Filter:</span>
+              <button onclick="setPlatformFilter('')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">All</button>
+              <button onclick="setPlatformFilter('cli')" class="px-2.5 py-1 rounded bg-slate-800/60 hover:bg-slate-700 text-slate-300 flex items-center space-x-1"><i data-lucide="terminal" class="w-3 h-3"></i><span>CLI</span></button>
+              <button onclick="setPlatformFilter('webui')" class="px-2.5 py-1 rounded bg-slate-800/60 hover:bg-slate-700 text-slate-300 flex items-center space-x-1"><i data-lucide="globe" class="w-3 h-3"></i><span>WebUI</span></button>
+              <button onclick="setPlatformFilter('subagent')" class="px-2.5 py-1 rounded bg-amber-950/60 border border-amber-500/30 hover:bg-amber-900/60 text-amber-300 flex items-center space-x-1"><i data-lucide="bot" class="w-3 h-3"></i><span>Swarm Subagents</span></button>
+              <button onclick="setPlatformFilter('telegram')" class="px-2.5 py-1 rounded bg-slate-800/60 hover:bg-slate-700 text-slate-300 flex items-center space-x-1"><i data-lucide="send" class="w-3 h-3"></i><span>Telegram</span></button>
+              <button onclick="setPlatformFilter('cron')" class="px-2.5 py-1 rounded bg-slate-800/60 hover:bg-slate-700 text-slate-300 flex items-center space-x-1"><i data-lucide="clock" class="w-3 h-3"></i><span>Cron</span></button>
+            </div>
+            
+            <!-- SPEC-HK-006: Sessions Time Range -->
+            <div class="flex items-center space-x-1.5 bg-dark-950 p-1 rounded-lg border border-slate-800 text-xs hidden sm:flex" id="sessionsTimeRangeToggles">
+              <button onclick="setSessionsTimeRange('24h')" class="sessions-time-btn px-2.5 py-1 rounded font-medium transition text-slate-400 hover:text-white" data-range="24h">24h</button>
+              <button onclick="setSessionsTimeRange('7d')" class="sessions-time-btn px-2.5 py-1 rounded font-medium transition text-slate-400 hover:text-white" data-range="7d">7d</button>
+              <button onclick="setSessionsTimeRange('30d')" class="sessions-time-btn px-2.5 py-1 rounded font-medium transition bg-brand-500/20 text-brand-300 border border-brand-500/30" data-range="30d">30d</button>
+              <button onclick="setSessionsTimeRange('all')" class="sessions-time-btn px-2.5 py-1 rounded font-medium transition text-slate-400 hover:text-white" data-range="all">All</button>
+            </div>
           </div>
         </div>
 
@@ -277,8 +287,8 @@
             <button onclick="setAnalyticsTimeRange('today')" class="time-range-btn px-3 py-1 rounded font-medium transition text-slate-400 hover:text-white" data-range="today">Today (24h)</button>
             <button onclick="setAnalyticsTimeRange('7d')" class="time-range-btn px-3 py-1 rounded font-medium transition text-slate-400 hover:text-white" data-range="7d">Past 7 Days</button>
             <button onclick="setAnalyticsTimeRange('month')" class="time-range-btn px-3 py-1 rounded font-medium transition text-slate-400 hover:text-white" data-range="month">This Month</button>
-            <button onclick="setAnalyticsTimeRange('30d')" class="time-range-btn px-3 py-1 rounded font-medium transition text-slate-400 hover:text-white" data-range="30d">Past 30 Days</button>
-            <button onclick="setAnalyticsTimeRange('all')" class="time-range-btn px-3 py-1 rounded font-medium transition bg-brand-500/20 text-brand-300 border border-brand-500/30" data-range="all">All Time</button>
+            <button onclick="setAnalyticsTimeRange('30d')" class="time-range-btn px-3 py-1 rounded font-medium transition bg-brand-500/20 text-brand-300 border border-brand-500/30" data-range="30d">Past 30 Days</button>
+            <button onclick="setAnalyticsTimeRange('all')" class="time-range-btn px-3 py-1 rounded font-medium transition text-slate-400 hover:text-white" data-range="all">All Time</button>
           </div>
         </div>
 
@@ -354,6 +364,28 @@
             <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Roster Records</span>
             <span id="hudFastestModel" class="px-2 py-0.5 rounded-full text-[11px] font-mono bg-cyan-950/80 text-cyan-300 border border-cyan-500/30">⚡ Fastest: gemini-3.8-flash</span>
             <span id="hudLongestContextModel" class="px-2 py-0.5 rounded-full text-[11px] font-mono bg-emerald-950/80 text-emerald-300 border border-emerald-500/30">🧠 Longest local context: qwen3.8-flash-next:262k</span>
+          </div>
+        </div>
+
+        <!-- AI Studio Style Temporal Usage & Cost Analyzer (SPEC-HK-006) -->
+        <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm">
+          <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
+            <div>
+              <h3 class="text-sm font-semibold text-white flex items-center space-x-2">
+                <i data-lucide="bar-chart-2" class="w-4 h-4 text-emerald-400"></i>
+                <span>Temporal Usage & Cost Analyzer</span>
+              </h3>
+              <p class="text-xs text-slate-400 mt-0.5">Input & output tokens and accrued costs grouped by model over time</p>
+            </div>
+            <div class="flex items-center space-x-1.5 bg-dark-950 p-1 rounded-lg border border-slate-800 text-xs" id="temporalMetricToggles">
+              <button onclick="setTemporalMetric('input_tokens')" class="temporal-metric-btn px-3 py-1 rounded font-medium transition bg-brand-500/20 text-brand-300 border border-brand-500/30" data-metric="input_tokens">Input Tokens</button>
+              <button onclick="setTemporalMetric('output_tokens')" class="temporal-metric-btn px-3 py-1 rounded font-medium transition text-slate-400 hover:text-white" data-metric="output_tokens">Output Tokens</button>
+              <button onclick="setTemporalMetric('cost_usd')" class="temporal-metric-btn px-3 py-1 rounded font-medium transition text-slate-400 hover:text-white" data-metric="cost_usd">Accrued Cost ($)</button>
+              <button onclick="setTemporalMetric('total_tokens')" class="temporal-metric-btn px-3 py-1 rounded font-medium transition text-slate-400 hover:text-white" data-metric="total_tokens">Total Tokens</button>
+            </div>
+          </div>
+          <div class="h-80 relative flex items-center justify-center">
+            <canvas id="temporalUsageChart"></canvas>
           </div>
         </div>
 
@@ -741,7 +773,7 @@
               <span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">Tailscale Mesh</span>
               <span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">btop & amdgpu_top Engine</span>
             </div>
-            <p class="text-xs text-slate-400">Real-time CPU, RAM, AMD APU Unified VRAM/GTT, inference engine slots, and thermal telemetry</p>
+            <p class="text-xs text-slate-400 mt-0.5">Real-time CPU, RAM, AMD APU Unified VRAM/GTT, inference engine slots, and thermal telemetry</p>
           </div>
           <div class="flex items-center space-x-3">
             <span id="nodesLastUpdated" class="text-xs text-slate-500 font-mono">Updated: Just now</span>
@@ -749,6 +781,27 @@
               <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
               <span>Refresh Fleet</span>
             </button>
+          </div>
+        </div>
+
+        <!-- SPEC-HK-006: Fleet GPU History Chart -->
+        <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm">
+          <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
+            <div>
+              <h3 class="text-sm font-semibold text-white flex items-center space-x-2">
+                <i data-lucide="activity" class="w-4 h-4 text-emerald-400"></i>
+                <span>Historical GPU Load &amp; APU Utilization</span>
+              </h3>
+              <p class="text-xs text-slate-400 mt-0.5">APU core busy percentage, active slots, and power draw across the tailscale mesh</p>
+            </div>
+            <div class="flex items-center space-x-1.5 bg-dark-950 p-1 rounded-lg border border-slate-800 text-xs" id="fleetGpuTimeRangeToggles">
+              <button onclick="setFleetGpuTimeRange('24h')" class="fleet-gpu-btn px-3 py-1 rounded font-medium transition text-slate-400 hover:text-white" data-range="24h">Today (24h)</button>
+              <button onclick="setFleetGpuTimeRange('7d')" class="fleet-gpu-btn px-3 py-1 rounded font-medium transition text-slate-400 hover:text-white" data-range="7d">7d</button>
+              <button onclick="setFleetGpuTimeRange('30d')" class="fleet-gpu-btn px-3 py-1 rounded font-medium transition bg-brand-500/20 text-brand-300 border border-brand-500/30" data-range="30d">Past 30 Days</button>
+            </div>
+          </div>
+          <div class="h-64 relative flex items-center justify-center">
+            <canvas id="fleetGpuHistoryChart"></canvas>
           </div>
         </div>
 

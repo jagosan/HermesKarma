@@ -770,6 +770,26 @@ class NodeTelemetryCollector:
                     f"Remote endpoint unreachable at {target_host}:{ollama_port} ({inf_res.get('error')})"
                 )
 
+        # SPEC-HK-006: Persist history in metadata DB
+        try:
+            if telemetry.get("status") in ("online", "warning") and "amdgpu" in telemetry:
+                from api.services.metadata_service import metadata_service
+                gpu = telemetry["amdgpu"]
+                inf = telemetry.get("inference_engine", {})
+                active_slots = inf.get("slot_summary", {}).get("active_slots", 0)
+                metadata_service.record_gpu_sample(
+                    node_id=node.get("id", "unknown"),
+                    gpu_busy_percent=gpu.get("gpu_busy_percent", 0.0),
+                    gtt_used_gb=gpu.get("gtt_used_gb", telemetry.get("apu_vram", {}).get("used_gb", 0.0)),
+                    gtt_total_gb=gpu.get("gtt_total_gb", telemetry.get("apu_vram", {}).get("total_gb", 0.0)),
+                    power_w=gpu.get("power_w", 0.0),
+                    temperature_c=gpu.get("temperature_c", 0.0),
+                    active_slots=active_slots
+                )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to record GPU history for {node.get('id')}: {e}")
+
         return telemetry
 
     async def get_all_nodes_telemetry(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
