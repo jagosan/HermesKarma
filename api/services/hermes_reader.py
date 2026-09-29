@@ -1048,6 +1048,8 @@ class HermesReader:
                                 COALESCE(billing_provider, '') as billing_provider,
                                 SUM(input_tokens) as inp,
                                 SUM(output_tokens) as out,
+                                SUM(cache_read_tokens) as cache_read,
+                                SUM(cache_write_tokens) as cache_write,
                                 SUM(reasoning_tokens) as reas,
                                 SUM(estimated_cost_usd) as stored_cost
                             FROM session_model_usage
@@ -1062,6 +1064,8 @@ class HermesReader:
                                 COALESCE(billing_provider, '') as billing_provider,
                                 SUM(input_tokens) as inp,
                                 SUM(output_tokens) as out,
+                                SUM(cache_read_tokens) as cache_read,
+                                SUM(cache_write_tokens) as cache_write,
                                 SUM(reasoning_tokens) as reas,
                                 SUM(estimated_cost_usd) as stored_cost
                             FROM session_model_usage
@@ -1077,8 +1081,8 @@ class HermesReader:
                             model_name=m,
                             input_tokens=(r["inp"] or 0),
                             output_tokens=(r["out"] or 0),
-                            cache_read_tokens=0,
-                            cache_write_tokens=0,
+                            cache_read_tokens=(r["cache_read"] or 0),
+                            cache_write_tokens=(r["cache_write"] or 0),
                             reasoning_tokens=(r["reas"] or 0),
                             stored_cost_usd=(r["stored_cost"] or 0.0),
                             billing_provider=r["billing_provider"]
@@ -1098,8 +1102,38 @@ class HermesReader:
                 dt = start_dt + datetime.timedelta(hours=i)
                 temporal_buckets.append(dt.strftime("%Y-%m-%d %H:00"))
                 temporal_labels.append(dt.strftime("%H:00"))
+        elif time_range in ("month", "this_month"):
+            start_dt = datetime.datetime(now_dt.year, now_dt.month, 1)
+            days_in_month = (now_dt.date() - start_dt.date()).days
+            for i in range(days_in_month + 1):
+                dt = start_dt + datetime.timedelta(days=i)
+                temporal_buckets.append(dt.strftime("%Y-%m-%d"))
+                temporal_labels.append(dt.strftime("%b %d"))
+        elif time_range in ("7d", "7days", "week"):
+            start_dt = now_dt - datetime.timedelta(days=7)
+            for i in range(8):
+                dt = start_dt + datetime.timedelta(days=i)
+                temporal_buckets.append(dt.strftime("%Y-%m-%d"))
+                temporal_labels.append(dt.strftime("%b %d"))
+        elif time_range == "all":
+            valid_buckets = [b for b in temporal_map.keys() if len(b) == 10 and b.count("-") == 2]
+            if valid_buckets:
+                earliest_b = min(valid_buckets)
+                try:
+                    start_dt = datetime.datetime.strptime(earliest_b, "%Y-%m-%d")
+                    days_span = min(180, max(30, (now_dt.date() - start_dt.date()).days))
+                    start_dt = now_dt - datetime.timedelta(days=days_span)
+                except Exception:
+                    start_dt = now_dt - datetime.timedelta(days=30)
+            else:
+                start_dt = now_dt - datetime.timedelta(days=30)
+            days = (now_dt.date() - start_dt.date()).days
+            for i in range(days + 1):
+                dt = start_dt + datetime.timedelta(days=i)
+                temporal_buckets.append(dt.strftime("%Y-%m-%d"))
+                temporal_labels.append(dt.strftime("%b %d"))
         else:
-            days = 30 if time_range in ("30d", "30days", "month", "this_month") else (7 if time_range in ("7d", "7days", "week") else 30)
+            days = 30
             start_dt = now_dt - datetime.timedelta(days=days)
             for i in range(days + 1):
                 dt = start_dt + datetime.timedelta(days=i)
