@@ -929,7 +929,32 @@ class TestHermesKarma(unittest.TestCase):
         self.assertTrue(isinstance(tu["models"], list))
         self.assertIn("series", tu)
         self.assertIn("input_tokens", tu["series"])
+        self.assertIn("output_tokens", tu["series"])
+        self.assertIn("total_tokens", tu["series"])
         self.assertIn("cost_usd", tu["series"])
+
+        # Verify month time range starts on 1st of month
+        res_m = self.client.get("/api/analytics/overview?time_range=month")
+        self.assertEqual(res_m.status_code, 200)
+        tu_m = res_m.json()["temporal_usage"]
+        import datetime
+        now = datetime.datetime.now()
+        expected_prefix = now.strftime("%Y-%m-01")
+        self.assertTrue(tu_m["buckets"][0].startswith(expected_prefix))
+
+        # Verify today time range has hour buckets
+        res_t = self.client.get("/api/analytics/overview?time_range=today")
+        self.assertEqual(res_t.status_code, 200)
+        tu_t = res_t.json()["temporal_usage"]
+        self.assertEqual(tu_t["bucket_type"], "hour")
+        self.assertEqual(len(tu_t["buckets"]), 25)
+
+        # Verify all time range spans historical data
+        res_a = self.client.get("/api/analytics/overview?time_range=all")
+        self.assertEqual(res_a.status_code, 200)
+        tu_a = res_a.json()["temporal_usage"]
+        self.assertGreaterEqual(len(tu_a["buckets"]), 30)
+
 
 if __name__ == "__main__":
     unittest.main()
