@@ -1,12 +1,12 @@
 # Structural Symbol Map (HermesKarma)
 
 - `specs/`:
-  - `specs/cost-estimation-engine.md`: SPEC-HK-002: Dynamic cost reconciliation & frontier pricing engine.
-  - `specs/counterfactual-cloud-cost-and-savings.md`: SPEC-HK-003: Counterfactual cloud cost & hardware savings engine ("Shadow Cost").
-  - `specs/cluster-gauge-node-view.md`: SPEC-HK-001: Multi-node APU telemetry & cluster gauges.
-  - `specs/cluster-gauge-refinement-and-mobile-ui.md`: SPEC-HK-004: Mobile responsive drawer & gauge layout.
-  - `specs/cluster-gauge-and-token-analytics-refinements.md`: SPEC-HK-005: Gauge telemetry binding fix, 240° clock sweep (-210° to +30°), classic palette, output tokens pie & tok/s HUD.
-  - `specs/default-30d-gpu-history-and-usage-view.md`: SPEC-HK-006: Default 30-day temporal window, historical GPU load graph in Fleet view, and AI Studio temporal usage & cost stacked bar chart.
+  - `specs/01-cluster-gauge-node-view.md`: SPEC-HK-001: Multi-node APU telemetry & cluster gauges.
+  - `specs/02-cost-estimation-engine.md`: SPEC-HK-002: Dynamic cost reconciliation & frontier pricing engine.
+  - `specs/03-counterfactual-cloud-cost-and-savings.md`: SPEC-HK-003: Counterfactual cloud cost & hardware savings engine ("Shadow Cost").
+  - `specs/04-cluster-gauge-refinement-and-mobile-ui.md`: SPEC-HK-004: Mobile responsive drawer & gauge layout.
+  - `specs/05-cluster-gauge-and-token-analytics-refinements.md`: SPEC-HK-005: Gauge telemetry binding fix, 240° clock sweep (-210° to +30°), classic palette, output tokens pie & tok/s HUD.
+  - `specs/06-default-30d-gpu-history-and-usage-view.md`: SPEC-HK-006: Default 30-day temporal window, historical GPU load graph in Fleet view, and AI Studio temporal usage & cost stacked bar chart.
 
 ## Backend Services (`api/services/`)
 - `hermes_reader.py`: `HermesReader`
