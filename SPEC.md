@@ -158,7 +158,7 @@ Automatic detection from git branch naming (feat/ENG-402-hermes-adapter).
 5.6 Multi-Node & AMD APU Fleet Telemetry Collector
 Tailscale mesh observability across heterogeneous compute nodes:
 • Beehive Coordinator: Local gateway host metrics (CPU load, RAM, disk, SQLite storage).
-• Chunkito AMD APU Worker (100.64.0.123): AMD Ryzen AI Max+ 395 Strix Halo APU telemetry with 118GB Unified VRAM (amdgpu.gttsize=120832), Ollama resident model tracking, VRAM allocation gauges, and OOM safety guard monitoring (OLLAMA_MAX_LOADED_MODELS=1 enforcement).
+• Chunkito AMD APU Worker (Remote Inference Node): AMD Ryzen AI Max+ 395 Strix Halo APU telemetry with 118GB Unified VRAM (amdgpu.gttsize=120832), Ollama resident model tracking, VRAM allocation gauges, and OOM safety guard monitoring (OLLAMA_MAX_LOADED_MODELS=1 enforcement).
 • Live Telemetry Stream: Real-time SSE updates broadcast to the dashboard without polling overhead.
 
 6. API Endpoint Specification (FastAPI / Port 8020)

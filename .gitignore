@@ -10,3 +10,8 @@ dist/
 .DS_Store
 *.db
 *.sqlite3
+vault_specs/
+.env
+.env.*
+!.env.example
+

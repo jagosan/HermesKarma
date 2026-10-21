@@ -27,7 +27,7 @@ The cluster features:
 ## 2. Telemetry Ingestion & Prometheus Integration
 
 ### 2.1 Prometheus Node Exporter Scraper Enhancement (`api/services/node_collector.py`)
-Node `chunkito` runs Prometheus Node Exporter on port `9100` over Tailscale. `node_collector.py` currently only reads 3 raw lines. It will be expanded to parse:
+Remote workers (e.g., node `chunkito`) run Prometheus Node Exporter on port `9100` over Tailscale or LAN (configured dynamically via `.env` / environment variables such as `CHUNKITO_HOST` and `CHUNKITO_TAILSCALE_IP`). `node_collector.py` parses:
 - `amdgpu_busy_percent` -> `gpu_busy_percent` (0 - 100)
 - `amdgpu_gtt_used_bytes` & `amdgpu_gtt_total_bytes` -> `gtt_used_gb`, `gtt_total_gb`
 - `amdgpu_vram_used_bytes` & `amdgpu_vram_total_bytes` -> `vram_used_gb`, `vram_total_gb`

@@ -1,7 +1,7 @@
 # SPEC-HK-003: Counterfactual Cloud Cost & Hardware Savings Engine ("Shadow Cost") for HermesKarma
 
 > **Target Systems:** `pricing_engine.py`, `hermes_reader.py`, `analytics.py`, `app.js`, `index.html`.  
-> **Platforms:** HermesKarma Web Dashboard (`https://localhost:8020`, port `:8020`).  
+> **Platforms:** HermesKarma Web Dashboard (`http://localhost:8020`).  
 > **Preceding Specs:** `SPEC-HK-002` (Dynamic Cost Estimation & Frontier Pricing Engine).
 
 ---

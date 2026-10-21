@@ -615,8 +615,12 @@ class NodeTelemetryCollector:
                 "tailscale_online": True,
             }
         else:
-            # Remote node (e.g. chunkito AMD APU node over Tailscale)
+            # Remote node (e.g. chunkito AMD APU node over Tailscale/LAN)
             target_host = tailscale_ip or host
+            if not target_host:
+                telemetry["status"] = "offline"
+                return telemetry
+
             inf_res = await self._query_ollama_endpoint(target_host, ollama_port, timeout_sec=3.0)
 
             # Check if Prometheus Node Exporter is running on target_host (port 9100)

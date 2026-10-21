@@ -118,13 +118,17 @@ _THROUGHPUT_PATTERN_RULES = (
 _CHUNKITO_LIVE_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
 
 def get_live_chunkito_throughput() -> Optional[Dict[str, Any]]:
-    """Probe chunkito llama-server Prometheus metrics for live measured throughput."""
+    """Probe remote inference node (e.g. chunkito) llama-server Prometheus metrics for live measured throughput."""
     now = time.time()
     if now - _CHUNKITO_LIVE_CACHE["ts"] < 15.0 and _CHUNKITO_LIVE_CACHE["data"] is not None:
         return _CHUNKITO_LIVE_CACHE["data"]
+    remote_host = os.getenv("CHUNKITO_HOST") or os.getenv("CHUNKITO_TAILSCALE_IP") or os.getenv("REMOTE_WORKER_HOST")
+    if not remote_host:
+        return None
+    port = int(os.getenv("CHUNKITO_OLLAMA_PORT", os.getenv("REMOTE_WORKER_OLLAMA_PORT", 11434)))
     try:
         import urllib.request, re
-        req = urllib.request.Request("http://100.64.0.123:11434/metrics", headers={"User-Agent": "HermesKarma/1.0"})
+        req = urllib.request.Request(f"http://{remote_host}:{port}/metrics", headers={"User-Agent": "HermesKarma/1.0"})
         with urllib.request.urlopen(req, timeout=0.8) as resp:
             text = resp.read().decode("utf-8")
             dec_g = re.search(r'^llamacpp:predicted_tokens_seconds\s+([0-9.]+)', text, re.M)

@@ -46,7 +46,7 @@ When operating heterogeneous agent fleets across local models (Ollama, vLLM, lla
 - Ticket cross-referencing (Linear, GitHub, Jira) linked with session IDs in metadata.
 
 ### 7. Multi-Node & AMD APU Fleet Telemetry Collector
-- Tailscale mesh observability across heterogeneous compute nodes (`beehive` coordinator and `chunkito` AMD APU remote worker at `100.64.0.123`).
+- Tailscale mesh observability across heterogeneous compute nodes (e.g. local coordinator and remote AMD APU/GPU worker configured via environment variables).
 - **AMD Ryzen AI Max+ 395 (Strix Halo)** telemetry: 118GB Unified VRAM allocation gauge (`amdgpu.gttsize=120832`), Ollama resident model footprint, and `OLLAMA_MAX_LOADED_MODELS=1` OOM safety guard monitoring.
 - Real-time fleet health, latency, CPU/RAM utilization, and model catalog inspection via REST and SSE stream.
 
@@ -104,6 +104,9 @@ cd HermesKarma
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r api/requirements.txt
+
+# (Optional) Configure environment variables for multi-node telemetry
+cp .env.example .env
 ```
 
 ### 2. Install Hermes Karma Plugin Hook
