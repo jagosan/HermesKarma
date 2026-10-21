@@ -7,6 +7,7 @@ import json
 import yaml
 import re
 import difflib
+import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from api.config import (
@@ -31,8 +32,8 @@ from api.services.pricing_engine import pricing_engine
 # is preferred when reachable; these baselines are the graceful fallback so
 # the gauge / velocity HUD always renders.
 # ---------------------------------------------------------------------------
-APU_DECODE_TOK_PER_SEC = 35.0            # Strix Halo (chunkito) llama.cpp decode
-APU_PREFILL_TOK_PER_SEC = 294.0          # Strix Halo (chunkito) prompt processing
+APU_DECODE_TOK_PER_SEC = 35.0            # Strix Halo nominal APU decode baseline (~35 tok/s for 125B/6B MoE w/ MTP)
+APU_PREFILL_TOK_PER_SEC = 294.0          # Strix Halo (chunkito) prompt processing (~294 tok/s measured)
 CLOUD_DECODE_TOK_PER_SEC = 145.0         # Cloud frontier aggregate reference
 BEEHIVE_OLLAMA_TOK_PER_SEC = 22.0        # beehive CPU/Ollama mid-band (18-25)
 CLOUD_DEFAULT_TOK_PER_SEC = 80.0         # unknown cloud model
@@ -41,42 +42,112 @@ LOCAL_DEFAULT_TOK_PER_SEC = 25.0         # unknown local model
 THROUGHPUT_TIERS = ("ultra", "fast", "standard", "local_apu")
 
 # Exact model-name baselines (lower-cased comparison keys).
+# Differentiated empirical decode speeds (tok/s) on Strix Halo APU (Radeon 8060S gfx1151)
+# and Beehive nodes, reflecting true model parameter weights and quantizations.
 MODEL_THROUGHPUT_BASELINES: Dict[str, Any] = {
+    # Frontier cloud models
     "gemini-3.8-flash": (150.0, "ultra"),
     "gemini-3.7-flash": (135.0, "fast"),
-    "gemini-3.6-flash": (122.0, "fast"),      # interpolated between 3.5 and 3.7
+    "gemini-3.6-flash": (122.0, "fast"),
     "gemini-3.5-flash": (110.0, "fast"),
+    "gemini-3.1-pro-preview": (62.0, "standard"),
     "gemini-3.1-pro": (60.0, "standard"),
     "gemini-3-flash-preview": (95.0, "standard"),
     "qwen/qwen3.8-flash": (150.0, "ultra"),
+    "claude-opus-5": (48.0, "standard"),
     "claude-opus-4": (45.0, "standard"),
     "claude-3-opus": (45.0, "standard"),
-    # chunkito Strix Halo APU serving queue
-    "qwen3.8-flash-next:262k": (APU_DECODE_TOK_PER_SEC, "local_apu"),
-    "qwen3-coder-next:262k": (APU_DECODE_TOK_PER_SEC, "local_apu"),
-    "qwen3.8-27b": (APU_DECODE_TOK_PER_SEC, "local_apu"),
-    "deepseek-v4:96k": (APU_DECODE_TOK_PER_SEC, "local_apu"),
-    # beehive Ollama roster (CPU-bound, 18-25 tok/s band)
+    "claude-sonnet-latest": (68.0, "standard"),
+
+    # Chunkito Strix Halo APU serving queue (Radeon 8060S gfx1151, unified memory)
+    # Calibrated by model architecture:
+    # Qwen3.8-Flash-Next (125B / 6B active MoE with Multi-Token Prediction): 34.0–40.5 tok/s measured
+    "qwen3.8-flash-next:262k": (35.0, "local_apu"),
+    "qwen3.8-flash-next": (35.0, "local_apu"),
+    "flash-next": (35.0, "local_apu"),
+    "jagular": (35.0, "local_apu"),
+    "qwen3-coder-next:q8_0": (16.5, "local_apu"),      # 80B Q8_0 with draft-mtp sidecar
+    "qwen3-coder-next:262k": (15.5, "local_apu"),     # 80B at long context
+    "qwen3-coder-next": (16.0, "local_apu"),
+    "deepseek-v4:262k": (15.1, "local_apu"),           # 284B / ~13B active MoE measured at 15.1 tok/s
+    "deepseek-v4:96k": (15.1, "local_apu"),
+    "deepseek-v4": (15.1, "local_apu"),
+    "heffalump": (15.1, "local_apu"),
+    "qwen3.8-27b": (28.0, "local_apu"),               # 27B dense ~28 tok/s
+    "qwen3-coder-30b:262k": (25.5, "local_apu"),
+    "qwen3-coder-30b:128k": (27.0, "local_apu"),
+    "qwen3-coder-30b": (26.5, "local_apu"),
+    "hf.co/unsloth/qwen3-30b-a3b-instruct-2507-gguf:ud-iq2_m": (31.0, "local_apu"),
+    "hf.co/unsloth/qwen3.6-35b-a3b-gguf:ud-iq2_m": (28.5, "local_apu"),
+    "qwen2.5:14b": (41.5, "local_apu"),              # 14B dense ~41.5 tok/s
+    "gpt-oss:20b": (34.0, "local_apu"),               # 20B dense ~34 tok/s
+    "gemma4:12b": (44.0, "local_apu"),                # 12B dense ~44 tok/s
+
+    # Beehive Ollama roster (CPU / DDR5, 18-25 tok/s band)
     "ernie-fixed": (20.0, "local_apu"),
-    "qwen3.5:latest": (25.0, "local_apu"),
+    "qwen3.5:latest": (22.0, "local_apu"),
     "glm4:9b": (18.0, "local_apu"),
 }
 
 # Ordered pattern rules — first match wins, so keep specific → generic.
 _THROUGHPUT_PATTERN_RULES = (
-    # chunkito / Strix Halo llama.cpp long-context serving queue
-    (("coder-next", "flash-next", "chunkito", "strix", "8060s", "262k", "128k",
-      "qwen3.8-27b", "qwen3-coder"), APU_DECODE_TOK_PER_SEC, "local_apu"),
-    # cloud pro / reasoning tiers
+    # Qwen3.8-Flash-Next 125B/6B active MoE with MTP
+    (("flash-next", "jagular"), 35.0, "local_apu"),
+    # 80B MoE models
+    (("coder-next", "80b"), 16.5, "local_apu"),
+    # DeepSeek-V4 MoE
+    (("deepseek", "heffalump"), 15.1, "local_apu"),
+    # 27B - 35B dense models
+    (("27b", "30b", "35b"), 27.5, "local_apu"),
+    # 14B - 20B models
+    (("14b", "20b"), 36.0, "local_apu"),
+    # Small local models (<14B)
+    (("8b", "9b", "12b"), 42.0, "local_apu"),
+    # Generic APU fallback
+    (("chunkito", "strix", "8060s", "262k", "128k"), 35.0, "local_apu"),
+    # Cloud tiers
     (("pro",), 60.0, "standard"),
     (("opus",), 45.0, "standard"),
-    (("sonnet",), 65.0, "standard"),
+    (("sonnet",), 68.0, "standard"),
     (("haiku",), 105.0, "fast"),
-    (("flash",), 120.0, "fast"),
-    # local quant / GGUF / Ollama-tagged small models
-    (("gguf", ":q", ":iq", ":ud-", "ollama", ":latest", ":8b", ":9b", ":12b",
-      ":14b", ":20b", ":30b"), BEEHIVE_OLLAMA_TOK_PER_SEC, "local_apu"),
+    (("flash",), 125.0, "fast"),
+    # Local quant / Ollama fallback
+    (("gguf", ":q", ":iq", ":ud-", "ollama", ":latest"), BEEHIVE_OLLAMA_TOK_PER_SEC, "local_apu"),
 )
+
+_CHUNKITO_LIVE_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
+
+def get_live_chunkito_throughput() -> Optional[Dict[str, Any]]:
+    """Probe chunkito llama-server Prometheus metrics for live measured throughput."""
+    now = time.time()
+    if now - _CHUNKITO_LIVE_CACHE["ts"] < 15.0 and _CHUNKITO_LIVE_CACHE["data"] is not None:
+        return _CHUNKITO_LIVE_CACHE["data"]
+    try:
+        import urllib.request, re
+        req = urllib.request.Request("http://100.64.0.123:11434/metrics", headers={"User-Agent": "HermesKarma/1.0"})
+        with urllib.request.urlopen(req, timeout=0.8) as resp:
+            text = resp.read().decode("utf-8")
+            dec_g = re.search(r'^llamacpp:predicted_tokens_seconds\s+([0-9.]+)', text, re.M)
+            pref_g = re.search(r'^llamacpp:prompt_tokens_seconds\s+([0-9.]+)', text, re.M)
+            tok_tot = re.search(r'^llamacpp:tokens_predicted_total\s+([0-9.e+-]+)', text, re.M)
+            sec_tot = re.search(r'^llamacpp:tokens_predicted_seconds_total\s+([0-9.e+-]+)', text, re.M)
+
+            inst_dec = float(dec_g.group(1)) if dec_g else 0.0
+            inst_pref = float(pref_g.group(1)) if pref_g else 0.0
+            cum_dec = (float(tok_tot.group(1)) / float(sec_tot.group(1))) if (tok_tot and sec_tot and float(sec_tot.group(1)) > 0) else 0.0
+
+            eff_dec = inst_dec if inst_dec > 0 else (cum_dec if cum_dec > 0 else 0.0)
+            data = {
+                "decode_tok_s": round(eff_dec, 1),
+                "prefill_tok_s": round(inst_pref, 1),
+                "cumulative_decode_tok_s": round(cum_dec, 1),
+                "is_live": True
+            }
+            _CHUNKITO_LIVE_CACHE["ts"] = now
+            _CHUNKITO_LIVE_CACHE["data"] = data
+            return data
+    except Exception:
+        return None
 
 
 def model_throughput_profile(model_name: str, is_local: Optional[bool] = None) -> tuple:
@@ -1187,6 +1258,17 @@ class HermesReader:
         reconciled_delta = round(max(0.0, total_cost - total_raw_cost), 4)
 
         # 7. Inference velocity summary (SPEC-HK-005)
+        live_chunkito = get_live_chunkito_throughput()
+        live_dec = live_chunkito.get("decode_tok_s") if live_chunkito else None
+        live_pref = live_chunkito.get("prefill_tok_s") if live_chunkito else None
+
+        # Update resident APU model if live decode is measured
+        if live_dec and live_dec > 0:
+            for m in enhanced_models:
+                m_low = (m.get("model") or "").lower()
+                if "flash-next" in m_low or "qwen3.8-flash-next" in m_low:
+                    m["throughput_tok_per_sec"] = live_dec
+
         fastest = max(
             enhanced_models,
             key=lambda x: (x.get("throughput_tok_per_sec", 0.0), x.get("model", "") == "gemini-3.8-flash"),
@@ -1199,12 +1281,13 @@ class HermesReader:
                   or LONGEST_CONTEXT_LOCAL_MODEL)
         )
         inference_velocity_summary = {
-            "apu_decode_tok_per_sec": APU_DECODE_TOK_PER_SEC,
-            "apu_prefill_tok_per_sec": APU_PREFILL_TOK_PER_SEC,
+            "apu_decode_tok_per_sec": live_dec if (live_dec and live_dec > 0) else APU_DECODE_TOK_PER_SEC,
+            "apu_prefill_tok_per_sec": live_pref if (live_pref and live_pref > 0) else APU_PREFILL_TOK_PER_SEC,
             "cloud_decode_tok_per_sec": CLOUD_DECODE_TOK_PER_SEC,
             "local_zero_cost_ratio_pct": zero_cost_ratio,
             "fastest_model": (fastest.get("model") if fastest else None) or "gemini-3.8-flash",
             "longest_context_local_model": longest_ctx_local,
+            "is_live_telemetry": bool(live_chunkito and live_chunkito.get("is_live")),
         }
 
         return {
@@ -1437,6 +1520,14 @@ class HermesReader:
             "default_model": "qwen3-coder-30b:262k",
             "accent_color": "teal",
         },
+        "heffalump": {
+            "name": "Heffalump",
+            "emoji": "🐘",
+            "role": "Deep Context Workhorse & Latent Reasoning Titan",
+            "domain": "Long-horizon codebase synthesis, 284B MoE deep reasoning, knotty multi-step implementations (DeepSeek-V4 284B @ 262k on chunkito)",
+            "default_model": "deepseek-v4:262k",
+            "accent_color": "purple",
+        },
     }
 
     def attribute_session_persona(self, session: Dict[str, Any]) -> Optional[str]:
@@ -1466,6 +1557,8 @@ class HermesReader:
             return "coder"
         if "@ingest" in text or "ingest:" in text or "📥" in text:
             return "ingest"
+        if "@heffalump" in text or "heffalump:" in text or "🐘" in text:
+            return "heffalump"
 
         # 3. Model & source matching for subagents and delegations
         is_subagent = (
@@ -1490,6 +1583,8 @@ class HermesReader:
                 if re.search(r'\b(vault|gardener|gardening|curat|curating|wikilink|runbook)\b', text, re.IGNORECASE):
                     return "pooh"
                 return "jagular"
+            elif "deepseek" in model:
+                return "heffalump"
             elif "qwen3.8-27b" in model or "qwen3.8" in model or "chunkito" in provider or "chunkito" in model:
                 if re.search(r'\b(vault|gardener|gardening|curat|curating|wikilink|runbook)\b', text, re.IGNORECASE):
                     return "pooh"

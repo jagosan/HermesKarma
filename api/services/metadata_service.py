@@ -521,6 +521,16 @@ class MetadataService:
                     (node_id, timestamp, gpu_busy_percent, gtt_used_gb, gtt_total_gb, power_w, temperature_c, active_slots)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, ("chunkito", current_ts, busy, gtt, 118.0, power, temp, slots))
+
+                # Baseline samples for beehive coordinator (Radeon 780M iGPU)
+                beehive_busy = random.uniform(2.0, 16.0) if tok > 1000 else random.uniform(0.0, 5.0)
+                beehive_power = random.uniform(18.0, 32.0) if tok > 1000 else random.uniform(14.0, 20.0)
+                beehive_temp = random.uniform(32.0, 48.0)
+                cur.execute("""
+                    INSERT INTO node_gpu_samples 
+                    (node_id, timestamp, gpu_busy_percent, gtt_used_gb, gtt_total_gb, power_w, temperature_c, active_slots)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, ("beehive", current_ts, beehive_busy, 0.1, 7.43, beehive_power, beehive_temp, 0))
                 
                 current_ts += (4 * 3600)
             conn.commit()

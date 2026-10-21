@@ -1,0 +1,20 @@
+Hermes Karma
+Copyright 2026 Jago Macleod
+
+This product includes software and architectural telemetry concepts derived from or inspired by
+Claude Code Karma (https://github.com/JayantDevkar/claude-code-karma),
+originally developed by Jayant Devkar (Copyright 2026 Jayant Devkar),
+licensed under the Apache License, Version 2.0.
+
+Attribution & Acknowledgments:
+1. Claude Code Karma
+   Author: Jayant Devkar (https://github.com/JayantDevkar)
+   Repository: https://github.com/JayantDevkar/claude-code-karma
+   License: Apache License, Version 2.0
+   Pioneering work in local-first LLM agent telemetry, trajectory inspection, and terminal window IPC.
+
+2. Hermes Agent
+   Author: Nous Research (https://nousresearch.com)
+   Repository: https://github.com/NousResearch/hermes-agent
+   The autonomous AI agent framework powering the underlying session state, tool execution,
+   and memory architecture.

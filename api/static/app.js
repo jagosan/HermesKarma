@@ -14,8 +14,131 @@ let allSkills = [];
 let allDiscoveredModels = [];
 let liveEventSource = null;
 
-// Color-coordinated palette shared by the model token doughnuts (TASK-HK-109)
-const MODEL_CHART_COLORS = ['#8b5cf6', '#6366f1', '#10b981', '#f59e0b', '#ec4899', '#06b6d4', '#3b82f6', '#14b8a6', '#a855f7', '#e11d48'];
+// ----------------------------------------------------
+// DURABLE MODEL COLOR PALETTE (TASK-HK-STABLE-PALETTE)
+// Consistent color per model across all charts and sessions.
+// Curated distinct hues for top models, Google Blue family for Gemini,
+// Emerald/Teal for Qwen, and deterministic hashing for new future models.
+// ----------------------------------------------------
+const CURATED_MODEL_COLORS = {
+  // Gemini family (Google Blues & Cyans)
+  'gemini-3.8-flash': '#2563eb',       // Tailwind blue-600
+  'gemini-3.7-flash': '#0284c7',       // Tailwind sky-600
+  'gemini-3.5-flash': '#06b6d4',       // Tailwind cyan-500
+  'gemini-3.6-flash': '#0ea5e9',       // Tailwind sky-500
+  'gemini-3.1-pro-preview': '#1d4ed8', // Tailwind blue-700
+  'gemini-3.1-pro': '#1e40af',         // Tailwind blue-800
+  'gemini-3-flash-preview': '#38bdf8', // Tailwind sky-400
+  'gemini-2.5-flash': '#0891b2',       // Tailwind cyan-600
+
+  // Qwen family (Vibrant Emerald & Teals)
+  'qwen3.8-flash-next': '#10b981',     // Tailwind emerald-500
+  'qwen3.8-flash-next:262k': '#10b981',
+  'qwen/qwen3.8-flash': '#10b981',
+  'flash-next': '#10b981',
+  'qwen3-coder-next': '#059669',       // Tailwind emerald-600
+  'qwen3-coder-next:q8_0': '#059669',
+  'qwen3-coder-next:262k': '#047857',  // Tailwind emerald-700
+  'qwen3.8-27b': '#14b8a6',            // Tailwind teal-500
+  'qwen3-coder-30b': '#0d9488',        // Tailwind teal-600
+  'qwen3-coder-30b:262k': '#0d9488',
+  'qwen3-coder-30b:128k': '#0f766e',   // Tailwind teal-700
+  'qwen2.5:14b': '#16a34a',            // Tailwind green-600
+  'qwen2.5': '#15803d',                // Tailwind green-700
+  'qwen3.5:latest': '#22c55e',         // Tailwind green-500
+
+  // DeepSeek family (Electric Indigo / Deep Violet)
+  'deepseek-v4': '#6366f1',            // Tailwind indigo-500
+  'deepseek-v4:262k': '#6366f1',
+  'deepseek-v4:96k': '#6366f1',
+  'deepseek-chat': '#4f46e5',          // Tailwind indigo-600
+  'deepseek-reasoner': '#4338ca',      // Tailwind indigo-700
+  'heffalump': '#8b5cf6',              // Tailwind violet-500 (Latent Reasoning Titan)
+
+  // Claude / Anthropic family (Warm Amber / Terracotta)
+  'claude-opus-5': '#d97706',          // Tailwind amber-600
+  'claude-opus-4': '#b45309',          // Tailwind amber-700
+  'claude-sonnet-latest': '#ea580c',   // Tailwind orange-600
+  'claude-3-5-sonnet': '#f59e0b',      // Tailwind amber-500
+  'claude-3-opus': '#c2410c',          // Tailwind orange-700
+
+  // Jagular (Chunkito 177B exclusive boot)
+  'jagular': '#f43f5e',                // Tailwind rose-500
+
+  // GPT / OSS / OpenAI family (Lime)
+  'gpt-oss:20b': '#84cc16',            // Tailwind lime-500
+  'gpt-4o': '#65a30d',                 // Tailwind lime-600
+  'gpt-4o-mini': '#a3e635',            // Tailwind lime-400
+
+  // Gemma family (Violet / Purple)
+  'gemma4:12b': '#a855f7',             // Tailwind purple-500
+  'gemma4': '#9333ea',                 // Tailwind purple-600
+  'gemma-2-9b': '#c084fc',             // Tailwind purple-400
+
+  // Nvidia / Nemotron (Yellow / Gold)
+  'nvidia/nemotron-3-ultra-550b-a55b:free': '#eab308' // Tailwind yellow-500
+};
+
+// Deterministic fallback palette for new future models
+const DURABLE_FALLBACK_PALETTE = [
+  '#38bdf8', '#fb7185', '#a78bfa', '#f472b6', '#34d399', '#fbbf24',
+  '#818cf8', '#2dd4bf', '#fb923c', '#c084fc', '#4ade80', '#e879f9',
+  '#60a5fa', '#f87171', '#a3e635', '#22d3ee', '#f43f5e', '#ec4899',
+  '#10b981', '#6366f1', '#8b5cf6', '#d97706', '#06b6d4', '#14b8a6'
+];
+
+function djb2Hash(str) {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash) + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+function getModelColor(modelName) {
+  if (!modelName) return '#94a3b8';
+  let s = String(modelName).trim().toLowerCase();
+  
+  // Normalize vendor prefix
+  ['google/', 'anthropic/', '~anthropic/', 'qwen/', 'meta-llama/'].forEach(p => {
+    if (s.startsWith(p)) s = s.slice(p.length);
+  });
+
+  // Direct lookup
+  if (CURATED_MODEL_COLORS[s]) return CURATED_MODEL_COLORS[s];
+
+  // Specific version / pattern fallbacks
+  if (s.includes('gemini-3.8')) return '#2563eb';
+  if (s.includes('gemini-3.7')) return '#0284c7';
+  if (s.includes('gemini-3.5')) return '#06b6d4';
+  if (s.includes('gemini-3.6')) return '#0ea5e9';
+  if (s.includes('gemini-3.1') || s.includes('gemini-3-pro')) return '#1d4ed8';
+  if (s.includes('gemini-3-flash')) return '#38bdf8';
+  if (s.includes('gemini')) return '#3b82f6';
+
+  if (s.includes('flash-next') || s.includes('qwen3.8-flash')) return '#10b981';
+  if (s.includes('coder-next')) return '#059669';
+  if (s.includes('qwen3.8-27b') || s.includes('qwen3.8')) return '#14b8a6';
+  if (s.includes('qwen3-coder')) return '#0d9488';
+  if (s.includes('qwen3-30b') || s.includes('qwen3.6-35b') || s.includes('qwen3')) return '#0f766e';
+  if (s.includes('qwen2.5')) return '#16a34a';
+  if (s.includes('qwen')) return '#10b981';
+
+  if (s.includes('deepseek')) return '#6366f1';
+  if (s.includes('heffalump')) return '#8b5cf6';
+  if (s.includes('claude')) return '#d97706';
+  if (s.includes('jagular')) return '#f43f5e';
+  if (s.includes('gpt')) return '#84cc16';
+  if (s.includes('gemma')) return '#a855f7';
+  if (s.includes('nemotron')) return '#eab308';
+
+  // Deterministic stable hash for any newly added model
+  return DURABLE_FALLBACK_PALETTE[djb2Hash(s) % DURABLE_FALLBACK_PALETTE.length];
+}
+
+// Fallback constant for backwards compatibility
+const MODEL_CHART_COLORS = DURABLE_FALLBACK_PALETTE;
 
 // Tailwind class sets for the throughput (tok/s) badges (TASK-HK-112)
 const THROUGHPUT_BADGE_CLASSES = {
@@ -236,13 +359,13 @@ async function loadSessions() {
       if (modelsList.length > 0) {
         modelPills = modelsList.map(m => {
           const mName = m.model || 'unknown';
-          const isLocal = mName.includes('qwen') || mName.includes('chunkito') || mName.includes('deepseek') || mName.includes('gemma') || mName.includes('gpt-oss') || mName.includes('gguf');
-          const badgeBg = isLocal ? 'bg-indigo-950/80 text-indigo-300 border-indigo-500/30' : 'bg-brand-950/80 text-brand-300 border-brand-500/30';
-          return `<span class="px-1.5 py-0.5 rounded border text-[10px] font-mono truncate max-w-[150px] inline-block ${badgeBg}" title="${mName} (${(m.input_tokens || 0).toLocaleString()} tok)">${mName}</span>`;
+          const mColor = getModelColor(mName);
+          return `<span class="px-1.5 py-0.5 rounded border text-[10px] font-mono truncate max-w-[150px] inline-flex items-center gap-1 bg-dark-900 border-slate-700/60 text-slate-200" title="${escapeHtml(mName)} (${(m.input_tokens || 0).toLocaleString()} tok)"><span class="w-1.5 h-1.5 rounded-full flex-shrink-0" style="background-color: ${mColor};"></span><span>${escapeHtml(mName)}</span></span>`;
         }).join(' ');
       } else {
         const topModel = s.model || 'default';
-        modelPills = `<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] font-mono truncate max-w-[150px] inline-block">${topModel}</span>`;
+        const mColor = getModelColor(topModel);
+        modelPills = `<span class="px-1.5 py-0.5 rounded border text-[10px] font-mono truncate max-w-[150px] inline-flex items-center gap-1 bg-dark-900 border-slate-700/60 text-slate-200"><span class="w-1.5 h-1.5 rounded-full flex-shrink-0" style="background-color: ${mColor};"></span><span>${escapeHtml(topModel)}</span></span>`;
       }
 
       const totalTok = (s.input_tokens || 0) + (s.output_tokens || 0);
@@ -637,10 +760,14 @@ async function loadAnalytics() {
 
       const recBadge = m.is_reconciled ? '<span class="ml-1.5 px-1 py-0.2 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-500/30 text-[9px] font-mono" title="Reconciled against published pricing card">⚡ Reconciled</span>' : '';
       const costStr = m.cost_usd && m.cost_usd > 0 ? `$${m.cost_usd.toFixed(4)}${recBadge}` : '<span class="text-emerald-400">$0.00 (APU)</span>';
+      const mColor = getModelColor(m.model);
 
       return `
         <tr class="hover:bg-slate-800/40">
-          <td class="py-2.5 px-3 font-semibold text-slate-200">${escapeHtml(m.model)}</td>
+          <td class="py-2.5 px-3 font-semibold text-slate-200">
+            <span class="inline-block w-2.5 h-2.5 rounded-full mr-2 align-middle shadow-sm flex-shrink-0" style="background-color: ${mColor};"></span>
+            ${escapeHtml(m.model)}
+          </td>
           <td class="py-2.5 px-3">${tagBadge}</td>
           <td class="py-2.5 px-3 font-semibold text-indigo-300">${(m.turns_count || 0).toLocaleString()}</td>
           <td class="py-2.5 px-3">${(m.session_count || 0).toLocaleString()}</td>
@@ -665,7 +792,10 @@ function renderVelocityHud(data) {
   const fmt = (val) => (typeof val === 'number' ? val.toFixed(1) : '~0.0');
 
   const apuDecode = document.getElementById('hudApuDecode');
-  if (apuDecode) apuDecode.innerHTML = `~${fmt(v.apu_decode_tok_per_sec ?? 35.0)} <span class="text-xs font-medium text-emerald-400/70">tok/s</span>`;
+  if (apuDecode) {
+    const liveTag = v.is_live_telemetry ? ' <span class="px-1 py-0.5 rounded text-[9px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 align-middle">LIVE</span>' : '';
+    apuDecode.innerHTML = `~${fmt(v.apu_decode_tok_per_sec ?? 22.5)} <span class="text-xs font-medium text-emerald-400/70">tok/s</span>${liveTag}`;
+  }
 
   const apuPrefill = document.getElementById('hudApuPrefill');
   if (apuPrefill) apuPrefill.innerHTML = `~${fmt(v.apu_prefill_tok_per_sec ?? 294.0)} <span class="text-xs font-medium text-cyan-400/70">tok/s</span>`;
@@ -697,6 +827,7 @@ function renderAnalyticsCharts(data) {
     }
     const modelLabels = (data.model_distribution || []).map(m => m.model);
     const modelTokens = (data.model_distribution || []).map(m => (m.input_tokens || 0) + (m.output_tokens || 0));
+    const modelColors = modelLabels.map(m => getModelColor(m));
 
     try {
       modelChartInstance = new Chart(modelCtx, {
@@ -705,7 +836,7 @@ function renderAnalyticsCharts(data) {
           labels: modelLabels,
           datasets: [{
             data: modelTokens,
-            backgroundColor: MODEL_CHART_COLORS
+            backgroundColor: modelColors
           }]
         },
         options: {
@@ -729,6 +860,7 @@ function renderAnalyticsCharts(data) {
     }
     const outputLabels = (data.model_distribution || []).map(m => m.model);
     const outputTokens = (data.model_distribution || []).map(m => m.output_tokens || 0);
+    const outputColors = outputLabels.map(m => getModelColor(m));
 
     try {
       modelOutputChartInstance = new Chart(modelOutputCtx, {
@@ -738,7 +870,7 @@ function renderAnalyticsCharts(data) {
           datasets: [{
             label: 'Output Tokens',
             data: outputTokens,
-            backgroundColor: MODEL_CHART_COLORS
+            backgroundColor: outputColors
           }]
         },
         options: {
@@ -775,7 +907,7 @@ function renderAnalyticsCharts(data) {
       .sort((a, b) => ((b.throughput_tok_per_sec || 0) - (a.throughput_tok_per_sec || 0)));
     const velocityLabels = ranked.map(m => m.model);
     const velocityValues = ranked.map(m => m.throughput_tok_per_sec || 0);
-    const velocityColors = ranked.map(m => THROUGHPUT_CHART_COLORS[m.throughput_tier] || THROUGHPUT_CHART_COLORS.standard);
+    const velocityColors = velocityLabels.map(m => getModelColor(m));
 
     try {
       velocityChartInstance = new Chart(velocityCtx, {
@@ -919,14 +1051,14 @@ function renderTemporalUsageChart(data) {
   const seriesDict = tData.series[metric] || {};
   
   const datasets = [];
-  tData.models.forEach((m, idx) => {
+  tData.models.forEach((m) => {
     const rawData = seriesDict[m] || [];
     // Only include if model has any data in this window
     if (rawData.some(v => v > 0)) {
       datasets.push({
         label: m,
         data: rawData,
-        backgroundColor: MODEL_CHART_COLORS[idx % MODEL_CHART_COLORS.length],
+        backgroundColor: getModelColor(m),
         borderWidth: 0,
         fill: true,
       });
@@ -1011,13 +1143,13 @@ async function loadPantheon() {
     const summ = data.summary || {};
 
     const kpiAgents = document.getElementById('pantheonKpiAgents');
-    if (kpiAgents) kpiAgents.innerText = `${summ.total_agents || 9} Agents`;
+    if (kpiAgents) kpiAgents.innerText = `${summ.total_agents || 10} Agents`;
 
     const headerBadge = document.getElementById('pantheonHeaderBadge');
-    if (headerBadge) headerBadge.innerText = `${summ.total_agents || 9} Autonomous Specialists`;
+    if (headerBadge) headerBadge.innerText = `${summ.total_agents || 10} Autonomous Specialists`;
 
     const kpiLocal = document.getElementById('pantheonKpiLocal');
-    if (kpiLocal) kpiLocal.innerText = `${summ.local_agents || 8} APU/Local • ${summ.cloud_agents || 1} Cloud`;
+    if (kpiLocal) kpiLocal.innerText = `${summ.local_agents || 9} APU/Local • ${summ.cloud_agents || 1} Cloud`;
 
     const kpiSessions = document.getElementById('pantheonKpiSessions');
     if (kpiSessions) kpiSessions.innerText = `${(summ.total_sessions || 0).toLocaleString()} Sessions`;
@@ -1482,9 +1614,12 @@ async function loadFleetGpuHistory() {
     }
 
     const chunkito = data.nodes['chunkito'] || [];
-    if (chunkito.length === 0) return;
+    const beehive = data.nodes['beehive'] || [];
+    if (chunkito.length === 0 && beehive.length === 0) return;
 
-    const labels = chunkito.map(s => {
+    const primarySeries = chunkito.length > 0 ? chunkito : beehive;
+
+    const labels = primarySeries.map(s => {
       // Shorten label based on range
       if (currentFleetGpuTimeRange === '24h' || currentFleetGpuTimeRange === 'today') {
         const parts = s.datetime.split(' ');
@@ -1495,6 +1630,17 @@ async function loadFleetGpuHistory() {
 
     const busyData = chunkito.map(s => s.gpu_busy_percent);
     const powerData = chunkito.map(s => s.power_w);
+
+    // Two-pointer nearest-timestamp alignment for beehive GPU load
+    let bIdx = 0;
+    const beehiveBusyData = primarySeries.map(p => {
+      if (beehive.length === 0) return 0;
+      const targetTs = p.timestamp;
+      while (bIdx < beehive.length - 1 && Math.abs(beehive[bIdx + 1].timestamp - targetTs) < Math.abs(beehive[bIdx].timestamp - targetTs)) {
+        bIdx++;
+      }
+      return beehive[bIdx] ? beehive[bIdx].gpu_busy_percent : 0;
+    });
 
     fleetGpuHistoryChartInstance = new Chart(ctx, {
       type: 'line',
@@ -1510,6 +1656,17 @@ async function loadFleetGpuHistory() {
             pointRadius: 0,
             pointHitRadius: 10,
             fill: true,
+            yAxisID: 'y'
+          },
+          {
+            label: 'Beehive GPU Busy (%)',
+            data: beehiveBusyData,
+            borderColor: '#10b981',
+            backgroundColor: 'rgba(16, 185, 129, 0.05)',
+            borderWidth: 2,
+            pointRadius: 0,
+            pointHitRadius: 10,
+            fill: false,
             yAxisID: 'y'
           },
           {

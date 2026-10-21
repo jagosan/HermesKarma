@@ -29,7 +29,7 @@
 
 ## REST API Routes (`api/routes/`)
 - `pantheon.py`:
-  - `GET /api/pantheon/profiles`: List all 9 swarm agents + aggregated metrics
+  - `GET /api/pantheon/profiles`: List all 10 swarm agents + aggregated metrics
   - `GET /api/pantheon/profiles/{profile_id}`: Full persona detail + historical sessions
 - `sessions.py`:
   - `GET /api/sessions`: List sessions (supports `source=subagent`, `persona=<id>`, default 30d window)

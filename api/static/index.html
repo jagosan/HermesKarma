@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hermes Karma ☸️ — Observability & Trajectory Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+  <link rel="alternate icon" type="image/x-icon" href="/favicon.ico" />
+  <link rel="apple-touch-icon" href="/static/icon.png" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -52,8 +55,8 @@
       <button onclick="toggleMobileMenu()" class="md:hidden -ml-2 p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800/60" aria-label="Open navigation">
         <i data-lucide="menu" class="w-5 h-5"></i>
       </button>
-      <div class="w-9 h-9 rounded-lg bg-gradient-to-tr from-brand-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-brand-500/20 text-white font-bold text-lg">
-        ☸️
+      <div class="w-9 h-9 rounded-lg overflow-hidden shadow-lg shadow-brand-500/20 border border-slate-700/60 flex items-center justify-center bg-dark-900 flex-shrink-0">
+        <img src="/static/favicon.svg" alt="Hermes Karma Logo" class="w-full h-full object-contain" />
       </div>
       <div>
         <div class="flex items-center space-x-2">
@@ -193,6 +196,7 @@
                 <option value="pooh">🐻 Pooh (Curator)</option>
                 <option value="coder">💻 Coder (Engineer)</option>
                 <option value="ingest">📥 Ingest (Synthesizer)</option>
+                <option value="heffalump">🐘 Heffalump (Workhorse/Reasoning)</option>
               </select>
 
               <!-- Model Filter Dropdown -->
@@ -484,7 +488,7 @@
                 <span class="text-2xl">🌲</span>
                 <h2 class="text-base font-bold text-white tracking-tight">Hundred Acre Wood Pantheon Swarm</h2>
                 <span id="pantheonHeaderBadge" class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-brand-950 text-brand-300 border border-brand-500/30">
-                  9 Autonomous Specialists
+                  10 Autonomous Specialists
                 </span>
               </div>
               <p class="text-xs text-slate-400 mt-1">
@@ -506,8 +510,8 @@
                 <i data-lucide="users" class="w-3.5 h-3.5 text-brand-400"></i>
                 <span>Active Specialists</span>
               </div>
-              <div id="pantheonKpiAgents" class="text-xl font-bold text-white mt-1">9 Agents</div>
-              <div id="pantheonKpiLocal" class="text-[11px] text-emerald-400 mt-0.5 font-mono">8 APU/Local • 1 Cloud</div>
+              <div id="pantheonKpiAgents" class="text-xl font-bold text-white mt-1">10 Agents</div>
+              <div id="pantheonKpiLocal" class="text-[11px] text-emerald-400 mt-0.5 font-mono">9 APU/Local • 1 Cloud</div>
             </div>
 
             <div class="p-3 rounded-lg bg-dark-950 border border-slate-800/80">
@@ -1134,6 +1138,17 @@
         <span>Tickets</span>
       </button>
     </nav>
+
+  <!-- Footer with attributions -->
+  <footer class="mt-auto border-t border-slate-800/80 bg-dark-900/60 py-4 px-6 text-center text-xs text-slate-500 mb-14 md:mb-0">
+    <div class="flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
+      <span><strong>Hermes Karma</strong> &copy; 2026 Jago Macleod</span>
+      <span>•</span>
+      <span>Inspired by &amp; companion to <a href="https://github.com/JayantDevkar/claude-code-karma" target="_blank" rel="noopener noreferrer" class="text-brand-400 hover:underline">Claude Code Karma</a> by Jayant Devkar (Apache-2.0)</span>
+      <span>•</span>
+      <span>Powered by <a href="https://hermes-agent.nousresearch.com" target="_blank" rel="noopener noreferrer" class="text-brand-400 hover:underline">Hermes Agent</a> by Nous Research</span>
+    </div>
+  </footer>
 
 </body>
 </html>

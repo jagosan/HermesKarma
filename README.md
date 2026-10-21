@@ -127,4 +127,5 @@ Open **`http://localhost:8020`** in your browser.
 ---
 
 ## 📄 License
-MIT License. See `LICENSE` for details.
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for details and attributions.

@@ -643,10 +643,10 @@ class TestHermesKarma(unittest.TestCase):
         data = res.json()
         self.assertIn("summary", data)
         self.assertIn("profiles", data)
-        self.assertGreaterEqual(data["summary"]["total_agents"], 9)
+        self.assertGreaterEqual(data["summary"]["total_agents"], 10)
         
         profile_ids = [p["id"] for p in data["profiles"]]
-        for required_id in ["owl", "rabbit", "tigger", "jagular", "piglet", "eeyore", "pooh", "coder", "ingest"]:
+        for required_id in ["owl", "rabbit", "tigger", "jagular", "piglet", "eeyore", "pooh", "coder", "ingest", "heffalump"]:
             self.assertIn(required_id, profile_ids)
             
         owl = next(p for p in data["profiles"] if p["id"] == "owl")
@@ -658,6 +658,11 @@ class TestHermesKarma(unittest.TestCase):
         self.assertEqual(jagular["emoji"], "🐆")
         self.assertEqual(jagular["name"], "Jagular")
         self.assertEqual(jagular["model"], "qwen3.8-flash-next:262k")
+
+        heffalump = next(p for p in data["profiles"] if p["id"] == "heffalump")
+        self.assertEqual(heffalump["emoji"], "🐘")
+        self.assertEqual(heffalump["name"], "Heffalump")
+        self.assertEqual(heffalump["model"], "deepseek-v4:262k")
 
         tigger = next(p for p in data["profiles"] if p["id"] == "tigger")
         self.assertEqual(tigger["emoji"], "🐯")
@@ -683,6 +688,16 @@ class TestHermesKarma(unittest.TestCase):
         self.assertEqual(data_jag["emoji"], "🐆")
         self.assertEqual(data_jag["model"], "qwen3.8-flash-next:262k")
         self.assertTrue(len(data_jag["soul_raw"]) > 0)
+
+        # Test Heffalump detail endpoint
+        res_hef = self.client.get("/api/pantheon/profiles/heffalump")
+        self.assertEqual(res_hef.status_code, 200)
+        data_hef = res_hef.json()
+        self.assertEqual(data_hef["id"], "heffalump")
+        self.assertEqual(data_hef["name"], "Heffalump")
+        self.assertEqual(data_hef["emoji"], "🐘")
+        self.assertEqual(data_hef["model"], "deepseek-v4:262k")
+        self.assertTrue(len(data_hef["soul_raw"]) > 0)
         
         # Test 404 for unknown profile
         res_404 = self.client.get("/api/pantheon/profiles/nonexistent_agent_xyz")
@@ -741,6 +756,23 @@ class TestHermesKarma(unittest.TestCase):
             "model": "hf.co/unsloth/ERNIE-4.5-21B-A3B-Thinking-GGUF:Q4_K_M"
         }
         self.assertEqual(hermes_reader.attribute_session_persona(eeyore_sub), "eeyore")
+
+        # Subagent with deepseek-v4 on chunkito -> Heffalump
+        heffalump_sub = {
+            "title": "Massive context ingestion and math reasoning",
+            "source": "subagent",
+            "model": "deepseek-v4:262k",
+            "billing_provider": "chunkito"
+        }
+        self.assertEqual(hermes_reader.attribute_session_persona(heffalump_sub), "heffalump")
+
+        # Explicit mention @heffalump
+        heffalump_named = {
+            "title": "Summoning @heffalump for 284B MoE synthesis",
+            "source": "subagent",
+            "model": "deepseek-v4"
+        }
+        self.assertEqual(hermes_reader.attribute_session_persona(heffalump_named), "heffalump")
 
         # Subagent with vault keyword -> Pooh
         pooh_sub = {
@@ -856,8 +888,8 @@ class TestHermesKarma(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         summary = res.json().get("inference_velocity_summary")
         self.assertIsInstance(summary, dict)
-        self.assertEqual(summary["apu_decode_tok_per_sec"], 35.0)
-        self.assertEqual(summary["apu_prefill_tok_per_sec"], 294.0)
+        self.assertGreater(summary["apu_decode_tok_per_sec"], 0.0)
+        self.assertGreater(summary["apu_prefill_tok_per_sec"], 0.0)
         self.assertEqual(summary["cloud_decode_tok_per_sec"], 145.0)
         self.assertIn("local_zero_cost_ratio_pct", summary)
         self.assertGreaterEqual(summary["local_zero_cost_ratio_pct"], 0.0)
@@ -871,14 +903,16 @@ class TestHermesKarma(unittest.TestCase):
             "gemini-3.8-flash": (150.0, "ultra"),
             "gemini-3.7-flash": (135.0, "fast"),
             "gemini-3.5-flash": (110.0, "fast"),
-            "gemini-3.1-pro-preview": (60.0, "standard"),
+            "gemini-3.1-pro-preview": (62.0, "standard"),
             "claude-3-opus": (45.0, "standard"),
             "qwen3.8-flash-next:262k": (35.0, "local_apu"),
-            "qwen3-coder-next:262k": (35.0, "local_apu"),
-            "qwen3.8-27b": (35.0, "local_apu"),
+            "qwen3-coder-next:262k": (15.5, "local_apu"),
+            "qwen3.8-27b": (28.0, "local_apu"),
+            "qwen2.5:14b": (41.5, "local_apu"),
+            "jagular": (35.0, "local_apu"),
             "glm4:9b": (18.0, "local_apu"),
             "ernie-fixed": (20.0, "local_apu"),
-            "qwen3.5:latest": (25.0, "local_apu"),
+            "qwen3.5:latest": (22.0, "local_apu"),
         }
         for name, (tok, tier) in expectations.items():
             got = model_throughput_profile(name)
@@ -908,13 +942,20 @@ class TestHermesKarma(unittest.TestCase):
         data = res.json()
         self.assertEqual(data["time_range"], "30d")
         self.assertIn("nodes", data)
-        # Should have generated backfill data
+        # Should have generated backfill data for both chunkito and beehive
         self.assertTrue(len(data["nodes"].get("chunkito", [])) > 0)
         sample = data["nodes"]["chunkito"][0]
         self.assertIn("timestamp", sample)
         self.assertIn("gpu_busy_percent", sample)
         self.assertIn("power_w", sample)
         self.assertIn("active_slots", sample)
+
+        # Beehive coordinator GPU history tracking
+        self.assertIn("beehive", data["nodes"])
+        self.assertTrue(len(data["nodes"].get("beehive", [])) > 0)
+        b_sample = data["nodes"]["beehive"][0]
+        self.assertIn("timestamp", b_sample)
+        self.assertIn("gpu_busy_percent", b_sample)
 
     def test_analytics_temporal_usage(self):
         """SPEC-HK-006: Verify temporal_usage structure in analytics overview."""

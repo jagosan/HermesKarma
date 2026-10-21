@@ -53,6 +53,14 @@ if static_dir.exists():
     def serve_index():
         return FileResponse(static_dir / "index.html")
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    def serve_favicon():
+        return FileResponse(static_dir / "favicon.ico")
+
+    @app.get("/favicon.svg", include_in_schema=False)
+    def serve_favicon_svg():
+        return FileResponse(static_dir / "favicon.svg", media_type="image/svg+xml")
+
 
 if __name__ == "__main__":
     import uvicorn

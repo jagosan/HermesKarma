@@ -41,12 +41,13 @@ _LOCAL_MODEL_PATTERNS = (
     r"^qwen3\.8-27b",
     r"^qwen3\.5",
     r"^qwen2\.5",
-    r"^deepseek-v4:96k",
+    r"^deepseek-v4",
     r"^hf\.co/",
     r"^gemma4:",
     r"^gpt-oss:",
     r"^flash-next$",
     r"^jagular$",
+    r"^heffalump$",
     r"^tigger$",
 )
 
