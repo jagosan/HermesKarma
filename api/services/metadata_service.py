@@ -386,7 +386,7 @@ class MetadataService:
 
     def record_gpu_sample(self, node_id: str, gpu_busy_percent: float, gtt_used_gb: float, 
                           gtt_total_gb: float, power_w: float, temperature_c: float, 
-                          active_slots: int, timestamp: float = None):
+                          active_slots: int, timestamp: Optional[float] = None):
         """Record a single GPU telemetry timeseries sample with automatic 60-day pruning."""
         ts = timestamp or time.time()
         prune_cutoff = ts - (60 * 86400)
@@ -440,7 +440,7 @@ class MetadataService:
                 FROM node_gpu_samples
                 WHERE timestamp >= ?
             """
-            params = [cutoff_ts]
+            params: List[Any] = [cutoff_ts]
             if node_id:
                 query += " AND node_id = ?"
                 params.append(node_id)

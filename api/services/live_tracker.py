@@ -4,14 +4,30 @@ import json
 import time
 from pathlib import Path
 from typing import List, Dict, Any, AsyncGenerator
-from api.config import KARMA_LIVE_DIR, HERMES_STATE_DB, HERMES_DIR
+from api.config import (
+    KARMA_LIVE_DIR,
+    HERMES_STATE_DB,
+    HERMES_DIR,
+    KARMA_ALERT_COOLDOWN_SECONDS,
+    MAX_CONSECUTIVE_TOOL_ERRORS,
+    MAX_SESSION_EXPLORATION_THRASH_RATIO,
+    MAX_SESSION_EXPLORATION_MIN_TURNS,
+    MAX_SINGLE_SESSION_CLOUD_COST_USD,
+)
 from api.services.hermes_reader import hermes_reader
+
+# SPEC-HK-007 §3.6.2: only autonomous ingress channels get circuit-broken;
+# interactive humans (cli/webui/telegram) absorb their own mistakes.
+AUTONOMOUS_INGRESS_CHANNELS = ("cron", "pantheon_subagent", "subagent", "pantheon", "swarm", "scheduler")
 
 
 class LiveTracker:
     def __init__(self, live_dir=KARMA_LIVE_DIR):
         self.live_dir = Path(live_dir)
         self.live_dir.mkdir(parents=True, exist_ok=True)
+        # SPEC-HK-007 §3.6.2: dedupe state for runaway-loop alerts
+        # key = f"{session_id}:{alert_type}" -> last alert epoch seconds.
+        self._alerted: Dict[str, float] = {}
 
     def get_live_sessions(self) -> List[Dict[str, Any]]:
         now = time.time()
@@ -198,6 +214,134 @@ class LiveTracker:
         results.sort(key=lambda x: x.get("last_active", 0), reverse=True)
         return results
 
+    # ------------------------------------------------------------------
+    # SPEC-HK-007 §3.6.2: Runaway loop & anomaly circuit breaker
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_autonomous(session: Dict[str, Any]) -> bool:
+        """Guardrails only apply to unattended cron/pantheon autonomous loops."""
+        if session.get("is_subagent"):
+            return True
+        channel = str(
+            session.get("ingress_channel") or session.get("platform") or ""
+        ).strip().lower()
+        return channel in AUTONOMOUS_INGRESS_CHANNELS
+
+    def _session_cloud_cost_usd(self, session: Dict[str, Any]) -> float:
+        """Counterfactual cloud USD for a live session's accumulated tokens.
+
+        Local APU runs price at $0.00 via the pricing engine; unknown models
+        price at 0 too, so the ceiling only fires for metered cloud traffic.
+        """
+        try:
+            from api.services.pricing_engine import pricing_engine
+            model = str(session.get("model") or "")
+            if not model or pricing_engine.is_local_model(model):
+                return 0.0
+            return float(pricing_engine.calculate_cost(
+                model_name=model,
+                input_tokens=int(session.get("total_prompt_tokens") or 0),
+                output_tokens=int(session.get("total_output_tokens") or 0),
+                billing_provider=str(session.get("billing_provider") or ""),
+            ) or 0.0)
+        except Exception:
+            return 0.0
+
+    def evaluate_loop_guardrails(
+        self, sessions: List[Dict[str, Any]], send: bool = True
+    ) -> List[Dict[str, Any]]:
+        """Check active sessions against SPEC-HK-007 §3.6.2 runaway thresholds:
+
+        * MAX_CONSECUTIVE_TOOL_ERRORS (default 5)
+        * MAX_SESSION_EXPLORATION_THRASH_RATIO (> 0.8 unedited-read waste share
+          after MAX_SESSION_EXPLORATION_MIN_TURNS assistant turns)
+        * MAX_SINGLE_SESSION_CLOUD_COST_USD (default $5.00)
+
+        Returns the violations found; each unique (session, alert_type) alerts at
+        most once per KARMA_ALERT_COOLDOWN_SECONDS.
+        """
+        now = time.time()
+        violations: List[Dict[str, Any]] = []
+
+        for s in sessions:
+            sid = str(s.get("session_id") or "")
+            if not sid or not self._is_autonomous(s):
+                continue
+
+            checks: List[Dict[str, Any]] = []
+
+            # 1. Consecutive tool error streak (emitted by hermes_karma_hook).
+            streak = int(s.get("consecutive_tool_errors") or 0)
+            if streak >= MAX_CONSECUTIVE_TOOL_ERRORS:
+                checks.append({
+                    "alert_type": "consecutive_tool_errors",
+                    "detail": (
+                        f"{streak} consecutive tool errors "
+                        f"(threshold {MAX_CONSECUTIVE_TOOL_ERRORS})"
+                    ),
+                    "value": streak,
+                })
+
+            # 2. Exploration thrash: >80% of files read were never edited,
+            #    only once the session is deep enough (10+ turns) to judge.
+            turns = int(s.get("turns") or 0)
+            files_read = list(s.get("files_read") or [])
+            files_edited = set(s.get("files_edited") or [])
+            if turns >= MAX_SESSION_EXPLORATION_MIN_TURNS and files_read:
+                unedited = [p for p in files_read if p not in files_edited]
+                thrash_ratio = round(len(unedited) / max(len(files_read), 1), 4)
+                if thrash_ratio > MAX_SESSION_EXPLORATION_THRASH_RATIO:
+                    checks.append({
+                        "alert_type": "exploration_thrash",
+                        "detail": (
+                            f"{thrash_ratio:.0%} of {len(files_read)} files read "
+                            f"unedited after {turns} turns "
+                            f"(threshold {MAX_SESSION_EXPLORATION_THRASH_RATIO:.0%})"
+                        ),
+                        "value": thrash_ratio,
+                    })
+
+            # 3. Single-session counterfactual cloud cost ceiling.
+            cost_usd = self._session_cloud_cost_usd(s)
+            if cost_usd > MAX_SINGLE_SESSION_CLOUD_COST_USD:
+                checks.append({
+                    "alert_type": "cloud_cost_ceiling",
+                    "detail": (
+                        f"${cost_usd:.2f} counterfactual cloud cost "
+                        f"(ceiling ${MAX_SINGLE_SESSION_CLOUD_COST_USD:.2f})"
+                    ),
+                    "value": round(cost_usd, 4),
+                })
+
+            for c in checks:
+                violation = {
+                    "session_id": sid,
+                    "ingress_channel": s.get("ingress_channel") or s.get("platform"),
+                    "model": s.get("model"),
+                    "turns": turns,
+                    "checked_at": now,
+                    **c,
+                }
+                violations.append(violation)
+                if not send:
+                    continue
+                key = f"{sid}:{c['alert_type']}"
+                if now - self._alerted.get(key, 0.0) < KARMA_ALERT_COOLDOWN_SECONDS:
+                    violation["alerted"] = "suppressed_cooldown"
+                    continue
+                from api.services.webhook_service import webhook_service
+                result = webhook_service.send_alert(
+                    alert_type=c["alert_type"],
+                    session_id=sid,
+                    detail=c["detail"],
+                    payload=violation,
+                )
+                self._alerted[key] = now
+                violation["alerted"] = bool(result.get("sent"))
+
+        return violations
+
     async def stream_live_events(self, interval: float = 2.0) -> AsyncGenerator[Dict[str, Any], None]:
         ticks = 0
         while True:
@@ -208,7 +352,17 @@ class LiveTracker:
             }
 
             # Every 5 ticks (~10s by default), emit fleet telemetry update
+            # and run the SPEC-HK-007 §3.6.2 runaway loop circuit breaker.
             if ticks % 5 == 0:
+                try:
+                    violations = self.evaluate_loop_guardrails(live)
+                    if violations:
+                        yield {
+                            "event": "loop_guard_alert",
+                            "data": json.dumps(violations),
+                        }
+                except Exception:
+                    pass
                 try:
                     from api.services.node_collector import node_collector
                     nodes_data = await node_collector.get_all_nodes_telemetry(force_refresh=False)

@@ -161,18 +161,20 @@ class TestHermesKarma(unittest.TestCase):
         hook.on_session_start(ctx)
         sessions = tracker.get_live_sessions()
         matched = next((s for s in sessions if s["session_id"] == "test_hook_sess_001"), None)
-        self.assertIsNotNone(matched)
+        assert matched is not None
         self.assertEqual(matched["status"], "LIVE")
 
         hook.on_tool_start(ctx, "terminal", {"command": "ls -la"})
         sessions = tracker.get_live_sessions()
         matched = next((s for s in sessions if s["session_id"] == "test_hook_sess_001"), None)
+        assert matched is not None
         self.assertEqual(matched["status"], "RUNNING_TOOL")
         self.assertEqual(matched["current_tool"], "terminal")
 
         hook.on_session_end(ctx)
         sessions = tracker.get_live_sessions()
         matched = next((s for s in sessions if s["session_id"] == "test_hook_sess_001"), None)
+        assert matched is not None
         self.assertEqual(matched["status"], "ENDED")
 
     # -----------------------------------------------------------------------
@@ -995,6 +997,221 @@ class TestHermesKarma(unittest.TestCase):
         self.assertEqual(res_a.status_code, 200)
         tu_a = res_a.json()["temporal_usage"]
         self.assertGreaterEqual(len(tu_a["buckets"]), 30)
+
+    # ------------------------------------------------------------------
+    # SPEC-HK-007 Phase 2: Context Tax API, Skill ROI auditor, loop guardrails
+    # ------------------------------------------------------------------
+
+    def test_api_analytics_context_tax(self):
+        """GET /api/analytics/context-tax matches the blueprint schema."""
+        res = self.client.get("/api/analytics/context-tax?days=30")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["window_days"], 30)
+        for k in ("cold_start_tokens", "spatial_index_tokens",
+                  "exploration_waste_tokens", "productive_tokens",
+                  "amnesia_reread_tokens"):
+            self.assertIn(k, data["token_breakdown"])
+        roi = data["spatial_roi"]
+        for k in ("mapped_sessions_count", "unmapped_sessions_count",
+                  "avg_turns_to_first_edit_mapped", "avg_turns_to_first_edit_unmapped",
+                  "avg_read_to_edit_ratio_mapped", "avg_read_to_edit_ratio_unmapped",
+                  "net_exploration_tokens_saved", "counterfactual_spatial_savings_usd",
+                  "map_drift"):
+            self.assertIn(k, roi)
+        for k in ("is_stale", "map_last_updated_iso", "commits_since_map_update",
+                  "unindexed_files"):
+            self.assertIn(k, roi["map_drift"])
+        for k in ("total_compactions", "avg_compression_ratio",
+                  "total_tokens_reclaimed", "total_amnesia_reread_tokens"):
+            self.assertIn(k, data["compaction_stats"])
+        self.assertIsInstance(data["top_thrash_files"], list)
+        for ch in ("cli", "webui", "telegram", "cron", "pantheon_subagent"):
+            self.assertIn(ch, data["ingress_breakdown"])
+
+    def test_api_session_detail_surfaces_context_audit(self):
+        """GET /api/sessions/{id} appends the SPEC-HK-007 context_audit object."""
+        lst = self.client.get("/api/sessions?limit=1").json()
+        sessions = lst.get("sessions") or []
+        if not sessions:
+            self.skipTest("no sessions in state.db")
+        sid = sessions[0]["session_id"]
+        detail = self.client.get(f"/api/sessions/{sid}").json()
+        self.assertIn("context_audit", detail)
+        ca = detail["context_audit"]
+        for k in ("ingress_channel", "used_map_md", "used_graphify",
+                  "turns_to_first_edit", "read_to_edit_ratio",
+                  "cold_start_tokens", "spatial_index_tokens",
+                  "exploration_waste_tokens", "productive_tokens",
+                  "compaction_events", "amnesia_reread_tokens",
+                  "untouched_files_read"):
+            self.assertIn(k, ca)
+        # Internal aggregation keys must not leak into the API payload.
+        self.assertFalse(any(k.startswith("_") for k in ca.keys()))
+
+    def test_api_skills_roi_endpoint(self):
+        """GET /api/skills/roi returns the dead-skill audit; list is enriched."""
+        res = self.client.get("/api/skills/roi?days=30")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["window_days"], 30)
+        self.assertIn("totals", data)
+        self.assertIn("dead_skills", data)
+        self.assertIsInstance(data["skills"], list)
+        for sk in data["skills"]:
+            for k in ("name", "skill_token_weight", "router_description_tokens",
+                      "body_tokens", "invocations", "invoking_sessions",
+                      "skill_error_rate", "is_dormant_dead"):
+                self.assertIn(k, sk)
+            self.assertGreater(sk["skill_token_weight"], 0)
+            self.assertEqual(
+                sk["skill_token_weight"],
+                sk["router_description_tokens"] + sk["body_tokens"],
+            )
+        # Existing list endpoint gains footprint + utility fields.
+        lst = self.client.get("/api/skills")
+        self.assertEqual(lst.status_code, 200)
+        for sk in lst.json()["skills"]:
+            self.assertIn("skill_token_weight", sk)
+            self.assertIn("is_dormant_dead", sk)
+            self.assertIn("invocations_30d", sk)
+
+    def test_skill_roi_dead_skill_detection(self):
+        """Auditor flags 0-invocation skills dead and correlates session errors."""
+        skills_root = Path(self.temp_dir) / "skills"
+        (skills_root / "alpha-skill").mkdir(parents=True)
+        (skills_root / "alpha-skill" / "SKILL.md").write_text(
+            "---\nname: alpha-skill\ndescription: Alpha does things\n---\n"
+            + "Alpha body instructions for the agent go here. " * 20,
+            encoding="utf-8",
+        )
+        (skills_root / "dead-skill").mkdir(parents=True)
+        (skills_root / "dead-skill" / "SKILL.md").write_text(
+            "---\nname: dead-skill\ndescription: Nobody uses me\n---\nDead body.\n",
+            encoding="utf-8",
+        )
+
+        db_file = Path(self.temp_dir) / "roi_state.db"
+        conn = sqlite3.connect(db_file)
+        conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at REAL, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0)")
+        conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, content TEXT, tool_calls TEXT)")
+        now = time.time()
+        conn.execute("INSERT INTO sessions VALUES ('roi_sess_1', ?, 1000, 100)", (now - 60,))
+        calls = json.dumps([
+            {"id": "c1", "function": {"name": "skill_view", "arguments": json.dumps({"name": "alpha-skill"})}},
+            {"id": "c2", "function": {"name": "read_file", "arguments": json.dumps({"path": "/repo/x.py"})}},
+            {"id": "c3", "function": {"name": "terminal", "arguments": json.dumps({"command": "ls"})}},
+        ])
+        conn.execute("INSERT INTO messages (session_id, role, content, tool_calls) VALUES ('roi_sess_1', 'assistant', '', ?)", (calls,))
+        conn.execute("INSERT INTO messages VALUES (NULL, 'roi_sess_1', 'tool', 'file contents here', NULL)")
+        conn.execute("INSERT INTO messages VALUES (NULL, 'roi_sess_1', 'tool', 'Error: no such file', NULL)")
+        conn.commit()
+        conn.close()
+
+        import api.services.hermes_reader as hr_mod
+        orig_dir = hr_mod.HERMES_SKILLS_DIR
+        orig_dbs = hr_mod.HermesReader._get_all_state_dbs
+        hermes_reader.invalidate_skill_roi_cache()
+        try:
+            hr_mod.HERMES_SKILLS_DIR = skills_root
+            hr_mod.HermesReader._get_all_state_dbs = lambda self: [db_file]
+            report = hermes_reader.get_skill_roi_audit(days=30)
+        finally:
+            hr_mod.HERMES_SKILLS_DIR = orig_dir
+            hr_mod.HermesReader._get_all_state_dbs = orig_dbs
+            hermes_reader.invalidate_skill_roi_cache()
+
+        by_name = {s["name"]: s for s in report["skills"]}
+        self.assertIn("alpha-skill", by_name)
+        self.assertIn("dead-skill", by_name)
+        self.assertTrue(by_name["dead-skill"]["is_dormant_dead"])
+        self.assertEqual(by_name["dead-skill"]["invocations"], 0)
+        self.assertIn("dead-skill", report["dead_skills"])
+        self.assertFalse(by_name["alpha-skill"]["is_dormant_dead"])
+        self.assertEqual(by_name["alpha-skill"]["invocations"], 1)
+        self.assertEqual(by_name["alpha-skill"]["invoking_sessions"], 1)
+        # 3 tool calls, 1 failed tool output => 1/3 error correlation.
+        self.assertEqual(by_name["alpha-skill"]["skill_session_total_tool_calls"], 3)
+        self.assertAlmostEqual(by_name["alpha-skill"]["skill_error_rate"], round(1 / 3, 4))
+        self.assertGreater(by_name["alpha-skill"]["skill_token_weight"],
+                           by_name["dead-skill"]["skill_token_weight"])
+        self.assertEqual(report["totals"]["installed_skills"], 2)
+        self.assertEqual(report["totals"]["dormant_dead_count"], 1)
+
+    def test_runaway_loop_guardrail_thresholds(self):
+        """SPEC-HK-007 §3.6.2 circuit breaker trips on the three thresholds."""
+        tracker = LiveTracker(live_dir=Path(self.temp_dir) / "live")
+        sessions = [
+            {  # cron loop stuck erroring + thrashing
+                "session_id": "runaway_1", "platform": "cron",
+                "consecutive_tool_errors": 6, "turns": 12,
+                "files_read": [f"/x/{i}.py" for i in range(10)],
+                "files_edited": ["/x/0.py"],
+            },
+            {  # pantheon subagent exploring blindly (100% unedited reads)
+                "session_id": "thrash_1", "ingress_channel": "pantheon_subagent",
+                "is_subagent": True, "turns": 15,
+                "files_read": [f"/y/{i}.py" for i in range(10)],
+                "files_edited": [],
+            },
+            {  # cloud cost ceiling breach (100M input tokens)
+                "session_id": "cost_1", "platform": "cron",
+                "model": "gemini-3.8-flash",
+                "total_prompt_tokens": 100_000_000, "total_output_tokens": 1_000_000,
+            },
+            {  # interactive human channel: never circuit-broken
+                "session_id": "human_1", "platform": "telegram",
+                "consecutive_tool_errors": 9, "turns": 40,
+                "files_read": ["/a.py"], "files_edited": [],
+            },
+            {  # healthy subagent
+                "session_id": "ok_1", "ingress_channel": "pantheon_subagent",
+                "is_subagent": True, "turns": 4,
+                "files_read": ["/b.py"], "files_edited": ["/b.py"],
+            },
+        ]
+        violations = tracker.evaluate_loop_guardrails(sessions, send=False)
+        by_sid = {}
+        for v in violations:
+            by_sid.setdefault(v["session_id"], set()).add(v["alert_type"])
+        self.assertIn("consecutive_tool_errors", by_sid.get("runaway_1", set()))
+        self.assertIn("exploration_thrash", by_sid.get("runaway_1", set()))
+        self.assertEqual(by_sid.get("thrash_1"), {"exploration_thrash"})
+        self.assertEqual(by_sid.get("cost_1"), {"cloud_cost_ceiling"})
+        self.assertNotIn("human_1", by_sid)
+        self.assertNotIn("ok_1", by_sid)
+
+    def test_runaway_loop_alert_dispatch_and_cooldown(self):
+        """Alerts fire once per (session, type) then cool down; send_alert never raises."""
+        from api.services import webhook_service as ws_mod
+        tracker = LiveTracker(live_dir=Path(self.temp_dir) / "live2")
+        captured = []
+        orig_send = ws_mod.webhook_service.send_alert
+
+        def fake_send(alert_type, session_id=None, detail=None, payload=None):
+            captured.append((alert_type, session_id))
+            return {"sent": True}
+
+        try:
+            ws_mod.webhook_service.send_alert = fake_send
+            sessions = [{
+                "session_id": "loop_9", "platform": "cron",
+                "consecutive_tool_errors": 7, "turns": 1,
+            }]
+            v1 = tracker.evaluate_loop_guardrails(sessions)
+            self.assertEqual(len(captured), 1)
+            self.assertIs(v1[0]["alerted"], True)
+            # Second evaluation within cooldown window must not re-alert.
+            v2 = tracker.evaluate_loop_guardrails(sessions)
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(v2[0]["alerted"], "suppressed_cooldown")
+        finally:
+            ws_mod.webhook_service.send_alert = orig_send
+
+        # No webhook URL configured: observable, silent, never raises.
+        res = webhook_service.send_alert("test_alert", session_id="x", detail="d")
+        self.assertFalse(res["sent"])
+        self.assertEqual(res["reason"], "alert_webhook_not_configured")
 
 
 if __name__ == "__main__":

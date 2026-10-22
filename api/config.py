@@ -27,6 +27,17 @@ GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 LINEAR_WEBHOOK_SECRET = os.getenv("LINEAR_WEBHOOK_SECRET", "")
 JIRA_WEBHOOK_SECRET = os.getenv("JIRA_WEBHOOK_SECRET", "")
 
+# SPEC-HK-007 §3.6.2: Runaway loop & anomaly circuit breaker thresholds for
+# active autonomous (cron / pantheon_subagent) sessions. Alerts are dispatched
+# outbound to KARMA_ALERT_WEBHOOK_URL (Slack/Discord/ntfy style sink); empty
+# URL keeps guardrail evaluation observable but silent.
+KARMA_ALERT_WEBHOOK_URL = os.getenv("KARMA_ALERT_WEBHOOK_URL", "")
+KARMA_ALERT_COOLDOWN_SECONDS = float(os.getenv("KARMA_ALERT_COOLDOWN_SECONDS", "900"))
+MAX_CONSECUTIVE_TOOL_ERRORS = int(os.getenv("MAX_CONSECUTIVE_TOOL_ERRORS", "5"))
+MAX_SESSION_EXPLORATION_THRASH_RATIO = float(os.getenv("MAX_SESSION_EXPLORATION_THRASH_RATIO", "0.8"))
+MAX_SESSION_EXPLORATION_MIN_TURNS = int(os.getenv("MAX_SESSION_EXPLORATION_MIN_TURNS", "10"))
+MAX_SINGLE_SESSION_CLOUD_COST_USD = float(os.getenv("MAX_SINGLE_SESSION_CLOUD_COST_USD", "5.0"))
+
 # Fleet & Multi-Node Telemetry Configuration
 DEFAULT_NODES = [
     {

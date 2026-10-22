@@ -26,6 +26,7 @@
   - `is_local_model(model_name, billing_provider)` -> bool
 - `live_tracker.py`: `LiveTracker`
   - `get_live_sessions()` -> List[Dict] (Active hooks, live delegations, live subagents)
+  - `evaluate_loop_guardrails(sessions)` -> List[Dict] (SPEC-HK-007 §3.6.2 runaway circuit breaker: consecutive tool errors, exploration thrash ratio, cloud cost ceiling; alerts via `webhook_service.send_alert` with per-session cooldown)
   - `stream_live_events(interval)` -> AsyncGenerator (SSE emitter for live sessions & fleet)
 - `node_collector.py`: `NodeTelemetryCollector` (Sysfs/APU & Prometheus node_exporter telemetry for Chunkito/Beehive, records GPU timeseries)
 - `metadata_service.py`: `MetadataService` (Tags, notes, ticket sync SQLite storage, node_gpu_samples timeseries persistence)
@@ -45,6 +46,7 @@
   - `GET /api/analytics/context-tax`: 4-tier context tax, spatial ROI, compaction amnesia, top thrash files, ingress
 - `skills.py`:
   - `GET /api/skills`: Extends base skills with dead/dormant 30d audit & tool error correlation
+  - `GET /api/skills/roi`: Skill ROI & Dead Skill Auditor (`skill_token_weight` footprint, invocations, `skill_error_rate`, dormant flags)
 - `nodes.py`:
   - `GET /api/nodes`: Multi-node cluster telemetry with Prometheus & APU hardware metrics
   - `GET /api/nodes/history`: Timeseries GPU load, power, and active slots for fleet APUs

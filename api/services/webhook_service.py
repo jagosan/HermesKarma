@@ -3,10 +3,17 @@ import hmac
 import hashlib
 import json
 import re
+import time
 import logging
+import urllib.request
 from typing import Dict, Any, List, Optional, Tuple
 from api.services.metadata_service import metadata_service
-from api.config import GITHUB_WEBHOOK_SECRET, LINEAR_WEBHOOK_SECRET, JIRA_WEBHOOK_SECRET
+from api.config import (
+    GITHUB_WEBHOOK_SECRET,
+    LINEAR_WEBHOOK_SECRET,
+    JIRA_WEBHOOK_SECRET,
+    KARMA_ALERT_WEBHOOK_URL,
+)
 
 logger = logging.getLogger("hermes_karma.webhooks")
 
@@ -449,6 +456,52 @@ class WebhookService:
             "linked_sessions": associated_sessions,
             "synced_count": synced_count,
         }
+
+
+    # ------------------------------------------------------------------
+    # SPEC-HK-007 §3.6.2: outbound runaway-loop & anomaly alerting
+    # ------------------------------------------------------------------
+
+    def send_alert(
+        self,
+        alert_type: str,
+        session_id: Optional[str] = None,
+        detail: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Dispatch a best-effort outbound alert to KARMA_ALERT_WEBHOOK_URL.
+
+        Used by the live_tracker runaway loop circuit breaker (consecutive tool
+        errors, exploration thrash, cloud cost ceiling). Never raises: an alert
+        sink outage must not break the SSE stream or the caller. When no URL is
+        configured the alert is still returned (and logged) so callers and tests
+        can observe guardrail trips without a sink.
+        """
+        message = {
+            "source": "hermes_karma",
+            "alert": alert_type,
+            "session_id": session_id,
+            "detail": detail,
+            "timestamp": time.time(),
+            "data": payload or {},
+        }
+        if not KARMA_ALERT_WEBHOOK_URL:
+            logger.warning("loop_guard_alert (no webhook configured): %s", message)
+            return {"sent": False, "reason": "alert_webhook_not_configured", "alert": message}
+        try:
+            req = urllib.request.Request(
+                KARMA_ALERT_WEBHOOK_URL,
+                data=json.dumps(message, default=str).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                status = int(resp.status or 0)
+            logger.info("loop_guard_alert sent: %s -> HTTP %s", alert_type, status)
+            return {"sent": True, "http_status": status, "alert": message}
+        except Exception as exc:  # noqa: BLE001 - alerting is fire-and-forget
+            logger.error("loop_guard_alert delivery failed for %s: %s", alert_type, exc)
+            return {"sent": False, "reason": f"delivery_error: {exc}", "alert": message}
 
 
 webhook_service = WebhookService()

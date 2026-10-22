@@ -230,6 +230,27 @@ _MAP_DRIFT_COMMIT_THRESHOLD = int(os.getenv("HERMES_KARMA_MAP_DRIFT_COMMITS", "1
 _MAX_AUDITED_SESSIONS = int(os.getenv("HERMES_KARMA_MAX_AUDIT_SESSIONS", "2000"))
 _DEFAULT_INPUT_USD_PER_MILLION = 0.75  # counterfactual floor (Gemini Flash class)
 
+# SPEC-HK-007 §3.4: Skill ROI & Dead Skill auditor.
+_SKILL_VIEW_TOOL_NAMES = {
+    "skill_view", "skill", "use_skill", "run_skill", "load_skill",
+    "skills_view", "view_skill",
+}
+_SKILL_MANAGE_TOOL_NAMES = {"skill_manage", "skill_create", "skill_update"}
+_SKILL_ROI_TTL_SECONDS = float(os.getenv("HERMES_KARMA_SKILL_ROI_TTL", "120"))
+
+
+def _tool_output_is_failure(content: str) -> bool:
+    """Heuristic tool-failure detector for role=tool message bodies (§3.4)."""
+    low = (content or "")[:300].lower()
+    if not (content or "").strip():
+        return True
+    return (
+        "no match" in low or "no matches" in low
+        or "no results" in low or "0 results" in low
+        or "not found" in low or low.startswith("error")
+        or "traceback (most recent call last)" in low
+    )
+
 
 def estimate_tokens(text: Optional[str]) -> int:
     """Cheap deterministic token estimate (~4 chars/token) when no exact count exists."""
@@ -704,6 +725,14 @@ class HermesReader:
             messages = []
             for r in rows:
                 m = dict(r)
+                # Some state.db rows store payloads (content/tool_calls/etc.) as
+                # BLOBs; decode them so the detail endpoint stays JSON-serializable.
+                for k, v in m.items():
+                    if isinstance(v, (bytes, bytearray)):
+                        try:
+                            m[k] = bytes(v).decode("utf-8")
+                        except UnicodeDecodeError:
+                            m[k] = bytes(v).decode("utf-8", errors="replace")
                 if m.get("tool_calls"):
                     try:
                         m["tool_calls_parsed"] = json.loads(m["tool_calls"])
@@ -2179,6 +2208,224 @@ class HermesReader:
 
         skills.sort(key=lambda x: x["name"])
         return skills
+
+    # ------------------------------------------------------------------
+    # SPEC-HK-007 §3.4: Skill ROI & "Dead Skill" auditor
+    # ------------------------------------------------------------------
+
+    _SKILL_ROI_CACHE: Dict[str, Any] = {}
+
+    def invalidate_skill_roi_cache(self) -> None:
+        """Drop the cached Skill ROI audit (e.g. after installing/removing skills)."""
+        self._SKILL_ROI_CACHE.clear()
+
+    @staticmethod
+    def _match_skill_in_blob(blob_l: str, tool_name_l: str,
+                             aliases: List[str],
+                             alias_to_name: Dict[str, str]) -> Optional[str]:
+        """Attribute one tool call to an installed skill.
+
+        * Explicit skill tools (``skill_view`` / ``skill_manage`` ...) match on
+          a skill alias appearing anywhere in the call arguments.
+        * Read/search tools match only when the arguments reference the skill's
+          ``SKILL.md`` path (e.g. ``.../skills/<category>/<name>/SKILL.md``).
+        """
+        is_skill_tool = (tool_name_l in _SKILL_VIEW_TOOL_NAMES
+                         or tool_name_l in _SKILL_MANAGE_TOOL_NAMES)
+        is_read_tool = tool_name_l in _READ_TOOL_NAMES
+        if not (is_skill_tool or is_read_tool):
+            return None
+        if is_read_tool and "skill.md" not in blob_l:
+            return None
+        for alias in aliases:  # longest aliases first
+            if alias and alias in blob_l:
+                return alias_to_name.get(alias)
+        return None
+
+    def get_skill_roi_audit(self, days: int = 30) -> Dict[str, Any]:
+        """SPEC-HK-007 §3.4: Skill ROI & Dead Skill auditor.
+
+        For every installed SKILL.md: static token footprint (router
+        description + expanded body), invocation count over a rolling window,
+        and tool-call failure correlation across sessions that invoked the
+        skill (``failed_tool_calls / total_tool_calls_in_skill_session``).
+        Skills with 0 invocations in the window are flagged dormant/dead while
+        still paying router description tokens in every base prompt.
+
+        The whole-window scan is a single pass over session message traces and
+        is TTL-cached in-process to keep repeated API calls fast.
+        """
+        now = time.time()
+        if (self._SKILL_ROI_CACHE
+                and (now - float(self._SKILL_ROI_CACHE.get("computed_at") or 0))
+                < _SKILL_ROI_TTL_SECONDS):
+            return dict(self._SKILL_ROI_CACHE["audit"])
+
+        days = max(1, int(days or 30))
+        cutoff_ts = now - days * 86400
+
+        catalog = self.get_skills_catalog()
+        stats: Dict[str, Dict[str, Any]] = {}
+        alias_to_name: Dict[str, str] = {}
+        for sk in catalog:
+            name = sk["name"]
+            content = sk.get("content") or ""
+            body = content
+            if content.startswith("---"):
+                parts = content.split("---", 2)
+                if len(parts) >= 3:
+                    body = parts[2]
+            desc_tokens = estimate_tokens(sk.get("description") or "")
+            body_tokens = estimate_tokens(body)
+            stats[name] = {
+                "name": name,
+                "category": sk.get("category"),
+                "router_description_tokens": desc_tokens,
+                "body_tokens": body_tokens,
+                "skill_token_weight": desc_tokens + body_tokens,
+                "invocations": 0,
+                "invoking_sessions": set(),
+                "last_invoked_at": None,
+                "skill_session_total_tool_calls": 0,
+                "skill_session_failed_tool_calls": 0,
+            }
+            sk_dir = str(Path(sk.get("relative_path") or "").parent).lower()
+            if sk_dir and sk_dir != ".":
+                alias_to_name.setdefault(sk_dir, name)
+            alias_to_name.setdefault(name.lower(), name)
+        aliases_sorted = sorted(alias_to_name.keys(), key=len, reverse=True)
+
+        for db_path in self._get_all_state_dbs():
+            conn = self._get_ro_conn_for_db(db_path)
+            if not conn:
+                continue
+            try:
+                with conn:
+                    cur = conn.cursor()
+                    tables = [r[0] for r in cur.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()]
+                    if "sessions" not in tables or "messages" not in tables:
+                        continue
+                    s_cols = self._get_table_columns(cur, "sessions")
+                    hidden_clause = "AND hidden = 0" if "hidden" in s_cols else ""
+                    rows = cur.execute(
+                        f"SELECT id, started_at FROM sessions "
+                        f"WHERE started_at >= ? {hidden_clause} "
+                        f"ORDER BY started_at DESC",
+                        (cutoff_ts,),
+                    ).fetchall()
+                    session_rows = [dict(r) for r in rows][:_MAX_AUDITED_SESSIONS]
+
+                    msg_cols = self._get_table_columns(cur, "messages")
+                    msg_where = "session_id = ?"
+                    if "active" in msg_cols and "compacted" in msg_cols:
+                        msg_where += " AND (active = 1 OR compacted = 1)"
+
+                    for srow in session_rows:
+                        sid = srow.get("id")
+                        started_at = srow.get("started_at")
+                        if not sid:
+                            continue
+                        calls_in_session = 0
+                        failed_in_session = 0
+                        invoked_here: set = set()
+                        for mrow in cur.execute(
+                            f"SELECT role, content, tool_calls FROM messages "
+                            f"WHERE {msg_where} ORDER BY id ASC",
+                            (sid,),
+                        ).fetchall():
+                            m = dict(mrow)
+                            role = (m.get("role") or "").lower()
+                            if role == "assistant" and m.get("tool_calls"):
+                                try:
+                                    calls = json.loads(m["tool_calls"])
+                                except Exception:
+                                    calls = []
+                                if not isinstance(calls, list):
+                                    calls = []
+                                for tc in calls:
+                                    if not isinstance(tc, dict):
+                                        continue
+                                    inner = tc.get("function")
+                                    inner = inner if isinstance(inner, dict) else {}
+                                    tname = str(
+                                        inner.get("name") or tc.get("name") or ""
+                                    ).strip().lower()
+                                    if not tname:
+                                        continue
+                                    calls_in_session += 1
+                                    args = inner.get("arguments", tc.get("arguments"))
+                                    try:
+                                        blob = args if isinstance(args, str) else json.dumps(
+                                            args or {}, default=str
+                                        )
+                                    except Exception:
+                                        blob = str(args)
+                                    matched = self._match_skill_in_blob(
+                                        blob.lower(), tname, aliases_sorted, alias_to_name
+                                    )
+                                    if matched and matched in stats:
+                                        stats[matched]["invocations"] += 1
+                                        invoked_here.add(matched)
+                                        cur_ts = float(started_at or 0)
+                                        last = stats[matched]["last_invoked_at"]
+                                        if last is None or cur_ts > last:
+                                            stats[matched]["last_invoked_at"] = cur_ts
+                            elif role == "tool" and _tool_output_is_failure(
+                                str(m.get("content") or "")
+                            ):
+                                failed_in_session += 1
+
+                        for sk_name in invoked_here:
+                            st = stats[sk_name]
+                            st["invoking_sessions"].add(sid)
+                            st["skill_session_total_tool_calls"] += calls_in_session
+                            st["skill_session_failed_tool_calls"] += failed_in_session
+            except Exception:
+                pass
+            finally:
+                conn.close()
+
+        skills_out: List[Dict[str, Any]] = []
+        dead_skills: List[str] = []
+        for st in stats.values():
+            total_calls = int(st["skill_session_total_tool_calls"])
+            failed_calls = int(st["skill_session_failed_tool_calls"])
+            dormant_dead = int(st["invocations"]) == 0
+            if dormant_dead:
+                dead_skills.append(st["name"])
+            skills_out.append({
+                k: (len(v) if isinstance(v, set) else v) for k, v in st.items()
+            } | {
+                "skill_error_rate": (
+                    round(failed_calls / total_calls, 4) if total_calls else 0.0
+                ),
+                "is_dormant_dead": dormant_dead,
+            })
+        skills_out.sort(key=lambda x: (-int(x["skill_token_weight"]), x["name"]))
+
+        audit = {
+            "window_days": days,
+            "totals": {
+                "installed_skills": len(skills_out),
+                "total_static_footprint_tokens": sum(
+                    s["skill_token_weight"] for s in skills_out
+                ),
+                "total_router_description_tokens": sum(
+                    s["router_description_tokens"] for s in skills_out
+                ),
+                "dormant_dead_count": len(dead_skills),
+                "dormant_router_tax_tokens": sum(
+                    s["router_description_tokens"] for s in skills_out
+                    if s["is_dormant_dead"]
+                ),
+            },
+            "dead_skills": sorted(dead_skills),
+            "skills": skills_out,
+        }
+        self._SKILL_ROI_CACHE = {"computed_at": now, "audit": audit}
+        return dict(audit)
 
     def get_skill_history(self, skill_name: str) -> Dict[str, Any]:
         """Fetch skill detail, snapshots, and diffs."""
