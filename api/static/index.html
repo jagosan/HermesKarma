@@ -393,6 +393,67 @@
           </div>
         </div>
 
+        <!-- SPEC-HK-007 §5: Context Tax & Spatial Navigation ROI -->
+        <div id="contextTaxCard" class="bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm space-y-5">
+          <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
+              <h3 class="text-sm font-semibold text-white flex items-center space-x-2">
+                <i data-lucide="compass" class="w-4 h-4 text-brand-400"></i>
+                <span>Context Tax &amp; Spatial ROI</span>
+              </h3>
+              <p class="text-xs text-slate-400 mt-0.5">4-Tier input token anatomy, <code class="text-brand-300">MAP.md</code>/<code class="text-brand-300">graphify</code> navigation ROI &amp; compaction amnesia telemetry</p>
+            </div>
+            <div id="mapDriftPill" class="text-xs"></div>
+          </div>
+
+          <!-- 4-Tier Context Composition Bar -->
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Context Composition (Input Token Anatomy)</span>
+              <span id="contextTaxTotalTokens" class="text-[11px] font-mono text-slate-400"></span>
+            </div>
+            <div id="contextTaxCompositionBar" class="flex h-6 w-full rounded-lg overflow-hidden border border-slate-700/60 bg-dark-950">
+              <div class="flex-1 flex items-center justify-center text-[10px] text-slate-600">Loading context tax telemetry&hellip;</div>
+            </div>
+            <div id="contextTaxLegend" class="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-[11px]"></div>
+          </div>
+
+          <!-- MAP.md + graphify A/B Spatial ROI Scorecard -->
+          <div id="spatialRoiScorecard"></div>
+
+          <!-- Compaction & Amnesia Tax Indicator -->
+          <div id="compactionAmnesiaStats" class="grid grid-cols-2 sm:grid-cols-4 gap-3"></div>
+
+          <!-- Top Thrash Files Leaderboard -->
+          <div>
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 mb-2">
+              <h4 class="text-xs font-semibold text-white uppercase tracking-wider">Top Thrash Files</h4>
+              <span class="text-[10px] text-slate-500">Frequently read, never edited &rarr; candidates for <code class="text-brand-300">docs/MAP.md</code></span>
+            </div>
+            <div class="overflow-x-auto">
+              <table id="topThrashFilesTable" class="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr class="border-b border-slate-800 text-slate-400 uppercase bg-dark-950/40">
+                    <th class="py-2 px-3">File Path</th>
+                    <th class="py-2 px-3">Unedited Reads</th>
+                    <th class="py-2 px-3">Wasted Tokens</th>
+                    <th class="py-2 px-3">In MAP.md</th>
+                  </tr>
+                </thead>
+                <tbody id="topThrashFilesBody" class="divide-y divide-slate-800/60 font-mono text-slate-300">
+                  <tr><td colspan="4" class="py-6 text-center text-slate-600">Loading&hellip;</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- SPEC-HK-007 §3.5: Ingress Gateway Attribution -->
+          <div class="pt-3 border-t border-slate-800/60">
+            <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Ingress Gateway Attribution</span>
+            <div id="ingressAttributionStrip" class="flex flex-wrap items-center gap-2 mt-2"></div>
+          </div>
+        </div>
+
         <!-- Charts Grid -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div class="bg-dark-900 border border-slate-800/80 rounded-xl p-5 shadow-sm">

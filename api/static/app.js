@@ -372,12 +372,25 @@ async function loadSessions() {
       const cacheTok = s.cache_read_tokens || 0;
       const reasTok = s.reasoning_tokens || 0;
 
+      // SPEC-HK-007 §5.5: ingress gateway, spatial guidance (MAP/GRAPH) &
+      // thrash-warning pills. Fields ride the session list payload; missing
+      // audit data simply renders no badge.
+      const ingressBadge = ingressBadgeHtml(s.ingress_channel || source);
+      const mapBadge = s.used_map_md ? `<span class="px-1.5 py-0.5 rounded border text-[10px] font-mono font-semibold bg-cyan-950/60 text-cyan-300 border-cyan-500/30" title="Spatially guided: docs/MAP.md injected or read in first turns">MAP</span>` : '';
+      const graphBadge = s.used_graphify ? `<span class="px-1.5 py-0.5 rounded border text-[10px] font-mono font-semibold bg-violet-950/60 text-violet-300 border-violet-500/30" title="Spatially guided: graphify topology query invoked">GRAPH</span>` : '';
+      const r2eRatio = Number(s.read_to_edit_ratio) || 0;
+      const thrashBadge = r2eRatio > 5.0 ? `<span class="px-1.5 py-0.5 rounded border text-[10px] font-mono font-semibold bg-amber-950/80 text-amber-300 border-amber-500/40" title="Read-to-Edit ratio ${r2eRatio.toFixed(1)} — repository thrashing (&gt;5.0)">⚠ THRASH</span>` : '';
+
       return `
         <tr class="hover:bg-slate-800/30 transition group cursor-pointer" onclick="openSessionTimeline('${s.session_id}')">
           <td class="py-3 px-4 max-w-xs">
             <div class="font-medium text-slate-200 truncate group-hover:text-brand-400 transition" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
             <div class="text-[11px] text-slate-400 font-mono truncate flex flex-wrap items-center gap-1.5 mt-0.5">
               <span>${s.session_id}</span>
+              ${ingressBadge}
+              ${mapBadge}
+              ${graphBadge}
+              ${thrashBadge}
               ${personaBadge}
               ${branch}
               ${tickets}
@@ -785,7 +798,218 @@ async function loadAnalytics() {
   } catch (err) {
     console.error(err);
   }
+  // SPEC-HK-007 §5: Context Tax & Spatial ROI (independent fetch, synced to range)
+  loadContextTax();
 }
+
+// ----------------------------------------------------
+// SPEC-HK-007: CONTEXT TAX & SPATIAL NAVIGATION ROI
+// ----------------------------------------------------
+const CONTEXT_TIER_META = [
+  { key: 'cold_start_tokens', tier: 'Tier 1', label: 'Base Harness', color: '#6366f1', desc: 'System prompt, MEMORY.md/USER.md, skill router descriptions & tool schemas' },
+  { key: 'spatial_index_tokens', tier: 'Tier 2', label: 'Spatial Index', color: '#22d3ee', desc: 'docs/MAP.md, AI context overview & graphify topology queries' },
+  { key: 'exploration_waste_tokens', tier: 'Tier 3', label: 'Exploration Thrash', color: '#f43f5e', desc: 'Read/search tokens for files never modified in the session' },
+  { key: 'productive_tokens', tier: 'Tier 4', label: 'Productive Context', color: '#10b981', desc: 'User prompts, edited-file reads, targeted test output & retained state' },
+];
+
+const INGRESS_BADGE_META = {
+  cli: { label: 'CLI', cls: 'bg-emerald-950/60 text-emerald-300 border-emerald-500/30' },
+  webui: { label: 'WEBUI', cls: 'bg-indigo-950/60 text-indigo-300 border-indigo-500/30' },
+  telegram: { label: 'TG', cls: 'bg-sky-950/60 text-sky-300 border-sky-500/30' },
+  cron: { label: 'CRON', cls: 'bg-rose-950/60 text-rose-300 border-rose-500/30' },
+  pantheon_subagent: { label: 'SWARM', cls: 'bg-purple-950/60 text-purple-300 border-purple-500/30' },
+};
+
+function analyticsRangeToDays(range) {
+  switch (range) {
+    case 'today': return 1;
+    case '7d': return 7;
+    case 'month': return 30;
+    case 'all': return 365;
+    case '30d':
+    default: return 30;
+  }
+}
+
+function fmtTok(n) {
+  const v = Number(n) || 0;
+  if (Math.abs(v) >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
+  if (Math.abs(v) >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
+  return String(v);
+}
+
+function ingressBadgeHtml(ch, extraCls = '') {
+  const meta = INGRESS_BADGE_META[ch] ||
+    { label: String(ch || '?').toUpperCase().slice(0, 6), cls: 'bg-slate-800 text-slate-300 border-slate-700/60' };
+  return `<span class="px-1.5 py-0.5 rounded border text-[10px] font-mono font-semibold whitespace-nowrap ${meta.cls} ${extraCls}" title="Ingress gateway: ${escapeHtml(ch)}">${meta.label}</span>`;
+}
+
+async function loadContextTax() {
+  const bar = document.getElementById('contextTaxCompositionBar');
+  if (!bar) return;
+  const days = analyticsRangeToDays(currentAnalyticsRange);
+  try {
+    const res = await fetch(`/api/analytics/context-tax?days=${days}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderContextTax(data);
+  } catch (err) {
+    console.error('context-tax load failed:', err);
+    bar.innerHTML = `<div class="flex-1 flex items-center justify-center text-[10px] text-rose-400">Failed to load context tax telemetry (${escapeHtml(err.message)})</div>`;
+  }
+}
+window.loadContextTax = loadContextTax;
+
+function renderContextTax(data) {
+  const breakdown = data.token_breakdown || {};
+  const roi = data.spatial_roi || {};
+  const drift = roi.map_drift || {};
+  const compaction = data.compaction_stats || {};
+
+  // --- Map drift pill (header) ---
+  const driftPill = document.getElementById('mapDriftPill');
+  if (driftPill) {
+    const unindexed = (drift.unindexed_files || []).length;
+    if (drift.is_stale) {
+      driftPill.innerHTML = `<span class="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-950/80 text-amber-300 border border-amber-500/40" title="docs/MAP.md is ${drift.commits_since_map_update || 0} commits behind HEAD${unindexed ? ` • ${unindexed} unindexed file candidates` : ''}">⚠ Map Drift Detected (${drift.commits_since_map_update || 0} commits)</span>`;
+    } else {
+      driftPill.innerHTML = `<span class="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-950/80 text-emerald-300 border border-emerald-500/40" title="docs/MAP.md updated ${escapeHtml(drift.map_last_updated_iso || 'recently')}">✓ Map Synced</span>`;
+    }
+  }
+
+  // --- 4-Tier Context Composition Bar ---
+  const bar = document.getElementById('contextTaxCompositionBar');
+  const legend = document.getElementById('contextTaxLegend');
+  const totalTokEl = document.getElementById('contextTaxTotalTokens');
+  const tierTotal = CONTEXT_TIER_META.reduce((acc, t) => acc + (Number(breakdown[t.key]) || 0), 0);
+  if (totalTokEl) totalTokEl.innerText = tierTotal > 0 ? `${tierTotal.toLocaleString()} input tokens • ${data.window_days || 0}d window` : '';
+  if (bar) {
+    if (tierTotal <= 0) {
+      bar.innerHTML = `<div class="flex-1 flex items-center justify-center text-[10px] text-slate-600">No tier-classified input tokens in this window</div>`;
+    } else {
+      bar.innerHTML = CONTEXT_TIER_META.map(t => {
+        const v = Number(breakdown[t.key]) || 0;
+        if (v <= 0) return '';
+        const pct = (v / tierTotal) * 100;
+        return `<div class="h-full transition-all" style="flex-grow: ${pct}; flex-basis: 0%; min-width: 4px; background-color: ${t.color};" title="${escapeHtml(`${t.tier} ${t.label}`)}: ${v.toLocaleString()} tokens (${pct.toFixed(1)}%)"></div>`;
+      }).join('');
+    }
+  }
+  if (legend) {
+    if (tierTotal <= 0) {
+      legend.innerHTML = '';
+    } else {
+      legend.innerHTML = CONTEXT_TIER_META.map(t => {
+        const v = Number(breakdown[t.key]) || 0;
+        const pct = ((v / tierTotal) * 100).toFixed(1);
+        return `<span class="inline-flex items-center gap-1.5 text-slate-400" title="${escapeHtml(t.desc)}"><span class="w-2 h-2 rounded-full flex-shrink-0" style="background-color: ${t.color};"></span><span class="text-slate-300">${escapeHtml(t.label)}</span> <span class="font-mono">${pct}%</span> <span class="font-mono text-slate-500">(${fmtTok(v)})</span></span>`;
+      }).join('');
+    }
+  }
+
+  // --- Spatial ROI Scorecard (Mapped vs Unmapped) ---
+  const scorecard = document.getElementById('spatialRoiScorecard');
+  if (scorecard) {
+    const mappedN = Number(roi.mapped_sessions_count) || 0;
+    const unmappedN = Number(roi.unmapped_sessions_count) || 0;
+    const netSaved = Number(roi.net_exploration_tokens_saved) || 0;
+    const usdSaved = Number(roi.counterfactual_spatial_savings_usd) || 0;
+    const col = (name, cls, sessions, ttfe, ratio, tip) => `
+      <div class="rounded-lg border ${cls} p-3.5" title="${escapeHtml(tip)}">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-[10px] font-semibold uppercase tracking-wider opacity-90">${escapeHtml(name)}</span>
+          <span class="px-1.5 py-0.5 rounded bg-dark-950/80 border border-slate-700/60 text-[10px] font-mono text-slate-300">${sessions.toLocaleString()} sess</span>
+        </div>
+        <div class="mt-2.5 grid grid-cols-2 gap-2 text-center">
+          <div>
+            <div class="text-xl font-bold font-mono">${ttfe.toFixed(1)}</div>
+            <div class="text-[10px] text-slate-400">Avg Turns to First Edit</div>
+          </div>
+          <div>
+            <div class="text-xl font-bold font-mono">${ratio.toFixed(2)}</div>
+            <div class="text-[10px] text-slate-400">Read-to-Edit Ratio</div>
+          </div>
+        </div>
+      </div>`;
+    scorecard.innerHTML = `
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        ${col('Mapped · MAP.md / graphify', 'border-emerald-500/30 bg-emerald-950/30 text-emerald-200', mappedN,
+          Number(roi.avg_turns_to_first_edit_mapped) || 0, Number(roi.avg_read_to_edit_ratio_mapped) || 0,
+          'Coding sessions that loaded MAP.md in the first turns or invoked graphify')}
+        ${col('Unmapped · Blind Traversal', 'border-slate-700 bg-dark-950/40 text-slate-300', unmappedN,
+          Number(roi.avg_turns_to_first_edit_unmapped) || 0, Number(roi.avg_read_to_edit_ratio_unmapped) || 0,
+          'Coding sessions with no spatial index guidance')}
+      </div>
+      <div class="flex flex-wrap items-center gap-x-8 gap-y-1.5 mt-3 pt-2.5 border-t border-slate-800/60 text-xs">
+        <span class="text-slate-400">Net exploration tokens saved:
+          <b class="font-mono ${netSaved >= 0 ? 'text-emerald-300' : 'text-rose-300'}">${netSaved.toLocaleString()}</b></span>
+        <span class="text-slate-400">Counterfactual USD saved:
+          <b class="font-mono ${usdSaved >= 0 ? 'text-emerald-300' : 'text-rose-300'}">$${usdSaved.toFixed(4)}</b></span>
+        <span class="text-[10px] text-slate-500" title="Net = (E_unmapped_avg − E_session) − S_session per mapped session, priced via pricing_engine">Net = (E&#772;<sub>unmapped</sub> − E<sub>session</sub>) − S<sub>session</sub></span>
+      </div>`;
+  }
+
+  // --- Compaction & Amnesia Tax indicator ---
+  const compEl = document.getElementById('compactionAmnesiaStats');
+  if (compEl) {
+    const compactions = Number(compaction.total_compactions) || 0;
+    const ratio = Number(compaction.avg_compression_ratio) || 0;
+    const reclaimed = Number(compaction.total_tokens_reclaimed) || 0;
+    const amnesia = Number(compaction.total_amnesia_reread_tokens) || 0;
+    const amnesiaPct = (reclaimed + amnesia) > 0 ? (amnesia / (reclaimed + amnesia)) * 100 : 0;
+    const tile = (label, value, sub, cls, tip) => `
+      <div class="rounded-lg border border-slate-800 bg-dark-950/40 px-3.5 py-2.5" ${tip ? `title="${escapeHtml(tip)}"` : ''}>
+        <div class="text-[10px] font-semibold uppercase tracking-wider text-slate-500">${escapeHtml(label)}</div>
+        <div class="text-lg font-bold font-mono mt-0.5 ${cls}">${value}</div>
+        <div class="text-[10px] text-slate-500 mt-0.5">${escapeHtml(sub)}</div>
+      </div>`;
+    compEl.innerHTML =
+      tile('Compaction Events', compactions.toLocaleString(), 'context boundary boundaries', 'text-white') +
+      tile('Avg Compression Ratio', `${(ratio * 100).toFixed(1)}%`, 'tokens discarded at compaction', 'text-cyan-300') +
+      tile('Tokens Reclaimed', fmtTok(reclaimed), `${reclaimed.toLocaleString()} tokens freed by compaction`, 'text-emerald-300') +
+      tile('Amnesia Tax', `${fmtTok(amnesia)} <span class="text-xs ${amnesiaPct > 30 ? 'text-rose-300' : 'text-amber-300'}">(${amnesiaPct.toFixed(1)}%)</span>`, 'post-compaction re-reads of known files', 'text-amber-300',
+        'Amnesia Tax % = amnesia re-read tokens as a share of (reclaimed + amnesia) tokens. High values mean the agent keeps re-reading files it already saw before compaction.');
+  }
+
+  // --- Top Thrash Files table (5 rows) ---
+  const thrashBody = document.getElementById('topThrashFilesBody');
+  if (thrashBody) {
+    const files = (data.top_thrash_files || []).slice(0, 5);
+    if (files.length === 0) {
+      thrashBody.innerHTML = `<tr><td colspan="4" class="py-6 text-center text-slate-600">No exploration thrash recorded in this window.</td></tr>`;
+    } else {
+      thrashBody.innerHTML = files.map(f => {
+        const inMap = f.in_map_md
+          ? '<span class="px-1.5 py-0.5 rounded bg-emerald-950/60 border border-emerald-500/30 text-emerald-300 text-[10px]" title="Documented in docs/MAP.md">in MAP</span>'
+          : '<span class="px-1.5 py-0.5 rounded bg-amber-950/60 border border-amber-500/30 text-amber-300 text-[10px]" title="Not documented in docs/MAP.md — candidate for an architectural summary">undocumented</span>';
+        return `<tr class="hover:bg-slate-800/40">
+          <td class="py-2 px-3 max-w-md truncate text-slate-200" title="${escapeHtml(f.path)}">${escapeHtml(f.path)}</td>
+          <td class="py-2 px-3 text-slate-300">${(f.unedited_read_count || 0).toLocaleString()}×</td>
+          <td class="py-2 px-3 text-rose-300">${(f.wasted_tokens || 0).toLocaleString()} <span class="text-slate-500">(${fmtTok(f.wasted_tokens || 0)})</span></td>
+          <td class="py-2 px-3">${inMap}</td>
+        </tr>`;
+      }).join('');
+    }
+  }
+
+  // --- Ingress gateway attribution strip ---
+  const strip = document.getElementById('ingressAttributionStrip');
+  if (strip) {
+    const ingress = data.ingress_breakdown || {};
+    const entries = Object.entries(ingress).filter(([, v]) => (v && ((v.sessions || 0) > 0 || (v.total_tokens || 0) > 0)));
+    if (entries.length === 0) {
+      strip.innerHTML = `<span class="text-[11px] text-slate-600">No ingress-attributed sessions in this window.</span>`;
+    } else {
+      entries.sort((a, b) => ((b[1].total_tokens || 0)) - ((a[1].total_tokens || 0)));
+      strip.innerHTML = entries.map(([ch, v]) =>
+        `${ingressBadgeHtml(ch)}<span class="text-[11px] font-mono text-slate-400 mr-2">${(v.sessions || 0).toLocaleString()} sess · ${fmtTok(v.total_tokens || 0)} tok</span>`
+      ).join('');
+    }
+  }
+
+  lucide.createIcons();
+}
+window.renderContextTax = renderContextTax;
 
 function renderVelocityHud(data) {
   const v = data.inference_velocity_summary || {};

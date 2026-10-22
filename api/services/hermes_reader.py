@@ -613,6 +613,19 @@ class HermesReader:
             item["ingress_channel"] = classify_ingress_channel(
                 item.get("source"), item.get("parent_session_id")
             )
+            # SPEC-HK-007 §5.5: lightweight audit flags powering the session-row
+            # MAP / GRAPH / THRASH badges. Reuses the incremental context-audit
+            # cache (~1ms cold per session, dict hit warm); any trace failure
+            # degrades to no badge and never breaks the list payload.
+            try:
+                _audit = self.compute_session_context_audit(sid)
+                item["used_map_md"] = bool(_audit.get("used_map_md"))
+                item["used_graphify"] = bool(_audit.get("used_graphify"))
+                item["read_to_edit_ratio"] = float(_audit.get("read_to_edit_ratio") or 0.0)
+            except Exception:
+                item["used_map_md"] = False
+                item["used_graphify"] = False
+                item["read_to_edit_ratio"] = 0.0
 
             item["metadata"] = meta_map.get(sid, {
                 "tags": [],
