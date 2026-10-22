@@ -56,6 +56,14 @@ When operating heterogeneous agent fleets across local models (Ollama, vLLM, lla
 - **AMD Ryzen AI Max+ 395 (Strix Halo)** telemetry: 118GB Unified VRAM allocation gauge (`amdgpu.gttsize=120832`), Ollama resident model footprint, and `OLLAMA_MAX_LOADED_MODELS=1` OOM safety guard monitoring.
 - Real-time fleet health, latency, CPU/RAM utilization, and model catalog inspection via REST and SSE stream.
 
+### 8. Context Tax, Spatial Navigation ROI & Harness Telemetry (SPEC-HK-007)
+- **4-Tier Context Tax Classification:** Single-pass token walk categorizing prompt volume into **Base Harness** (Tier 1), **Spatial Index** (`MAP.md` / `graphify`, Tier 2), **Exploration Thrash** (Tier 3), and **Productive Payload** (Tier 4) with strict arithmetic reconciliation.
+- **Spatial Navigation ROI Scorecard:** Empirical A/B comparison of Spatially Guided vs. Unmapped coding sessions (*Turns to First Edit*, *Read-to-Edit Hit Ratio*, and *Net Tokens / Dollar Savings* via `pricing_engine`).
+- **Map Drift & Staleness Detector:** Git commit distance analysis tracking how many code commits have landed since `docs/MAP.md` was last updated.
+- **Context Compaction & Amnesia Tax:** Tracks context compression boundaries, tokens reclaimed, and post-compaction redundant file re-reads.
+- **Skill ROI & Dead Skill Auditor:** Static token weight estimation, 30-day dormant/dead skill detection, and tool-call error correlation (`GET /api/skills/roi`).
+- **Runaway Loop Guardrails:** Outbound webhook alerts and SSE notifications triggering on error streaks ($\ge 5$), exploration thrash ($> 80\%$), or runaway session cloud spend ($> \$5.00$).
+
 ---
 
 ## 🏗️ Architecture
