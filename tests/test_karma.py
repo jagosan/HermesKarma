@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from api.main import app
-from api.services.hermes_reader import hermes_reader, model_throughput_profile
+from api.services.hermes_reader import hermes_reader, model_throughput_profile, estimate_tokens, reconcile_context_buckets
 from api.services.metadata_service import metadata_service, MetadataService
 from api.services.live_tracker import LiveTracker
 from api.services.terminal_focus import terminal_focus_service
@@ -20,6 +20,105 @@ from api.services.webhook_service import webhook_service
 from api.services.node_collector import node_collector, NodeTelemetryCollector
 from api.plugins.hermes_karma_hook import HermesKarmaHook
 from api.config import KARMA_METADATA_DB, DEFAULT_NODES
+
+
+# ---------------------------------------------------------------------------
+# SPEC-HK-007 synthetic Hermes state.db fixture builders.
+#
+# The context-tax engine reads a session trace straight out of a Hermes
+# ``state.db`` (``sessions`` + ``messages`` tables). These helpers mint a
+# minimal, deterministic DB on disk so the SPEC-HK-007 acceptance tests are
+# fully hermetic: they patch ``HermesReader._get_all_state_dbs`` to point at
+# the fixture and never touch the operator's real ``~/.hermes`` history.
+#
+# A tool call lives in an assistant message as ``tool_calls`` JSON; the token
+# footprint attributed to a read/edit is carried by the following ``role=tool``
+# result message's ``token_count`` (the reader's ``row_tokens`` source).
+# ---------------------------------------------------------------------------
+
+def _hk7_message(role, *, content="", tool_calls=None, tool_call_id=None,
+                 token_count=0, display_kind=None):
+    return {
+        "role": role,
+        "content": content,
+        "tool_calls": tool_calls,
+        "tool_call_id": tool_call_id,
+        "token_count": token_count,
+        "display_kind": display_kind,
+    }
+
+
+def _hk7_tool_call(name, path, call_id, *, tool_result_tokens=0,
+                   tool_result_content="ok file contents"):
+    """Return the (assistant tool-call, tool-result) message pair for one call."""
+    args = json.dumps({"path": path})
+    call = {"id": call_id, "function": {"name": name, "arguments": args}}
+    assistant_msg = _hk7_message("assistant", tool_calls=json.dumps([call]))
+    result_msg = _hk7_message(
+        "tool", content=tool_result_content, tool_call_id=call_id,
+        token_count=tool_result_tokens,
+    )
+    return assistant_msg, result_msg
+
+
+def _hk7_seed_db(db_path, sessions):
+    """Write a minimal Hermes-shaped SQLite DB and return the path."""
+    db_path = Path(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE sessions ("
+        "id TEXT PRIMARY KEY, source TEXT, parent_session_id TEXT, "
+        "system_prompt TEXT, model TEXT, input_tokens INTEGER, "
+        "output_tokens INTEGER, started_at REAL)"
+    )
+    conn.execute(
+        "CREATE TABLE messages ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, "
+        "content TEXT, tool_calls TEXT, tool_call_id TEXT, token_count INTEGER, "
+        "display_kind TEXT)"
+    )
+    for s in sessions:
+        conn.execute(
+            "INSERT INTO sessions (id, source, parent_session_id, system_prompt, "
+            "model, input_tokens, output_tokens, started_at) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                s["id"], s.get("source", "cli"), s.get("parent_session_id"),
+                s.get("system_prompt", ""), s.get("model", "gemini-3.8-flash"),
+                s.get("input_tokens", 0), s.get("output_tokens", 0),
+                s.get("started_at", time.time()),
+            ),
+        )
+        for m in s.get("messages", []):
+            conn.execute(
+                "INSERT INTO messages (session_id, role, content, tool_calls, "
+                "tool_call_id, token_count, display_kind) VALUES (?,?,?,?,?,?,?)",
+                (
+                    s["id"], m["role"], m.get("content", ""), m.get("tool_calls"),
+                    m.get("tool_call_id"), m.get("token_count", 0),
+                    m.get("display_kind"),
+                ),
+            )
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def _hk7_with_state_db(db_path, fn):
+    """Run ``fn()`` with the reader pointed only at ``db_path`` (hermetic).
+
+    Patches ``HermesReader._get_all_state_dbs`` at the class level and brackets
+    the call with context-audit cache invalidation so neither the operator's
+    real ``~/.hermes`` history nor a prior test's cache can leak in.
+    """
+    import api.services.hermes_reader as hr_mod
+    orig_dbs = hr_mod.HermesReader._get_all_state_dbs
+    hermes_reader.invalidate_context_audit_cache()
+    try:
+        hr_mod.HermesReader._get_all_state_dbs = lambda self: [Path(db_path)]
+        return fn()
+    finally:
+        hr_mod.HermesReader._get_all_state_dbs = orig_dbs
+        hermes_reader.invalidate_context_audit_cache()
 
 
 class TestHermesKarma(unittest.TestCase):
@@ -1212,6 +1311,348 @@ class TestHermesKarma(unittest.TestCase):
         res = webhook_service.send_alert("test_alert", session_id="x", detail="d")
         self.assertFalse(res["sent"])
         self.assertEqual(res["reason"], "alert_webhook_not_configured")
+
+    # ------------------------------------------------------------------
+    # SPEC-HK-007 §6 Acceptance Criteria — hermetic engine-level tests.
+    #
+    # Each test mints a synthetic Hermes state.db and points the reader at
+    # it via ``_hk7_with_state_db`` (patches ``_get_all_state_dbs``), so the
+    # operator's real ``~/.hermes`` history and the in-memory audit cache can
+    # never contaminate the assertions.
+    # ------------------------------------------------------------------
+
+    def test_ac1_context_bucket_classification(self):
+        """§6.1 system prompt + MAP.md read + 3 unedited reads + 1 edited read
+        partition into cold_start / spatial_index / exploration / productive
+        and satisfy the T1+T2+T3+T4 == total reconciliation invariant."""
+        sys_prompt = "SYSTEM " * 800  # 5600 chars -> estimate_tokens == 1400
+        msgs = [_hk7_message("user", content="fix the reader bug")]
+
+        # Tier 2: spatial index (MAP.md read within the first 3 turns).
+        a, r = _hk7_tool_call("read_file", "docs/MAP.md", "c_map", tool_result_tokens=1200)
+        msgs += [a, r]
+
+        # Three unedited reads -> Tier 3 exploration burn.
+        for cid, path, tok in (("c_a", "/repo/alpha.py", 500),
+                               ("c_b", "/repo/beta.py", 700),
+                               ("c_g", "/repo/gamma.py", 900)):
+            a, r = _hk7_tool_call("read_file", path, cid, tool_result_tokens=tok)
+            msgs += [a, r]
+
+        # One read of a file that IS subsequently edited -> productive, never waste.
+        a, r = _hk7_tool_call("read_file", "/repo/target.py", "c_t", tool_result_tokens=600)
+        msgs += [a, r]
+        a, r = _hk7_tool_call("patch", "/repo/target.py", "c_patch", tool_result_tokens=80)
+        msgs += [a, r]
+
+        db = _hk7_seed_db(Path(self.temp_dir) / "ac1.db", [{
+            "id": "hk7_ac1", "system_prompt": sys_prompt, "input_tokens": 10000,
+            "messages": msgs,
+        }])
+        audit = _hk7_with_state_db(db, lambda: hermes_reader.compute_session_context_audit("hk7_ac1"))
+
+        self.assertTrue(audit["is_coding_session"])
+        self.assertTrue(audit["used_map_md"])
+        self.assertEqual(audit["cold_start_tokens"], estimate_tokens(sys_prompt))
+        self.assertEqual(audit["spatial_index_tokens"], 1200)
+        self.assertEqual(audit["exploration_waste_tokens"], 500 + 700 + 900)
+        # Edited file's read must not appear as untouched/thrash.
+        self.assertEqual(audit["untouched_files_read"],
+                         ["/repo/alpha.py", "/repo/beta.py", "/repo/gamma.py"])
+        # Reconciliation arithmetic: the four tiers sum exactly to the total.
+        total = audit["total_prompt_tokens"]
+        four = (audit["cold_start_tokens"] + audit["spatial_index_tokens"]
+                + audit["exploration_waste_tokens"] + audit["productive_tokens"])
+        self.assertEqual(total, 10000)
+        self.assertEqual(four, total)
+        self.assertEqual(audit["productive_tokens"],
+                         total - 1400 - 1200 - 2100)
+        self.assertGreater(audit["productive_tokens"], 0)
+
+    def test_ac1_reconcile_context_buckets_arithmetic(self):
+        """§3.1 over-attribution is trimmed exploration-first and the residual
+        always lands in productive; the sum is invariant under any inputs."""
+        # No over-attribution -> exact passthrough, residual lands in productive.
+        t1, t2, t3, t4 = reconcile_context_buckets(1000, 100, 200, 300)
+        self.assertEqual((t1, t2, t3, t4), (100, 200, 300, 400))
+        # Over-attribution trims exploration FIRST: 600 attributed vs 500 total
+        # -> exploration 300 -> 200, spatial & cold untouched, productive floors 0.
+        t1, t2, t3, t4 = reconcile_context_buckets(500, 100, 200, 300)
+        self.assertEqual((t1, t2, t3, t4), (100, 200, 200, 0))
+        self.assertEqual(t1 + t2 + t3 + t4, 500)
+        # Severe over-attribution cascades spatial then cold to the floor, never
+        # negative, and still sums exactly to the total.
+        t1, t2, t3, t4 = reconcile_context_buckets(50, 100, 200, 300)
+        self.assertEqual((t1, t2, t3, t4), (50, 0, 0, 0))
+        self.assertTrue(all(v >= 0 for v in (t1, t2, t3, t4)))
+        self.assertEqual(t1 + t2 + t3 + t4, 50)
+        # Degenerate / empty inputs are clamped to zero.
+        self.assertEqual(reconcile_context_buckets(0, 0, 0, 0), (0, 0, 0, 0))
+        self.assertEqual(reconcile_context_buckets(None, None, None, None), (0, 0, 0, 0))
+        # Invariant holds across a sweep of arbitrary inputs.
+        for total in (0, 7, 100, 1000, 500_000):
+            for c in (0, 30, 500):
+                for sp in (0, 50, 400):
+                    for ex in (0, 25, 600):
+                        a, b, cc, d = reconcile_context_buckets(total, c, sp, ex)
+                        self.assertEqual(a + b + cc + d, total)
+                        self.assertTrue(all(v >= 0 for v in (a, b, cc, d)))
+
+    def test_ac2_pure_qa_exemption(self):
+        """§3.1/§6.2 a zero-edit read-only session keeps primary target reads
+        out of exploration_waste; only redundant re-reads / failed sweeps burn."""
+        # Session 1: distinct primary reads, no edits -> zero waste (the exemption).
+        m1 = [_hk7_message("user", content="how does the reader work?")]
+        a, r = _hk7_tool_call("read_file", "/app/core.py", "q1", tool_result_tokens=1200)
+        m1 += [a, r]
+        a, r = _hk7_tool_call("read_file", "/app/utils.py", "q2", tool_result_tokens=1000)
+        m1 += [a, r]
+
+        # Session 2: same session type but WITH a redundant re-read + a failed grep.
+        m2 = [_hk7_message("user", content="trace it again")]
+        a, r = _hk7_tool_call("read_file", "/app/x.py", "x1", tool_result_tokens=500)
+        m2 += [a, r]
+        a, r = _hk7_tool_call("read_file", "/app/x.py", "x2", tool_result_tokens=500)
+        m2 += [a, r]
+        a, r = _hk7_tool_call("grep", "/app", "x3", tool_result_tokens=100,
+                              tool_result_content="No matches found")
+        m2 += [a, r]
+
+        db = _hk7_seed_db(Path(self.temp_dir) / "ac2.db", [
+            {"id": "hk7_qa_clean", "input_tokens": 4000, "messages": m1},
+            {"id": "hk7_qa_redundant", "input_tokens": 4000, "messages": m2},
+        ])
+
+        def run():
+            return (hermes_reader.compute_session_context_audit("hk7_qa_clean"),
+                    hermes_reader.compute_session_context_audit("hk7_qa_redundant"))
+        clean, redundant = _hk7_with_state_db(db, run)
+
+        # Exemption: primary target reads are NOT exploration burn in a Q&A session.
+        self.assertFalse(clean["is_coding_session"])
+        self.assertEqual(clean["exploration_waste_tokens"], 0)
+        # Both distinct files still recorded as read-but-untouched (visibility),
+        # but they cost the session nothing in the Tier-3 bucket.
+        self.assertEqual(clean["untouched_files_read"], ["/app/core.py", "/app/utils.py"])
+        # The exemption is not a blanket zero: a redundant re-read + failed
+        # search DO burn tokens, while the FIRST read of x.py stays productive.
+        self.assertFalse(redundant["is_coding_session"])
+        self.assertEqual(redundant["exploration_waste_tokens"], 500 + 100)
+
+    def test_ac3_compaction_amnesia_detection(self):
+        """§3.3/§6.3 a re-read of an already-seen file within K=5 turns of a
+        compaction boundary increments amnesia_reread_tokens; outside the
+        window it does not."""
+        # Windowed session: read mod.py, compact, re-read mod.py one turn later.
+        mw = [_hk7_message("user", content="debug the crash")]
+        a, r = _hk7_tool_call("read_file", "/app/mod.py", "w_r1", tool_result_tokens=1000)
+        mw += [a, r]
+        mw.append(_hk7_message("assistant", content="[context compacted]",
+                               token_count=300, display_kind="context_compaction"))
+        a, r = _hk7_tool_call("read_file", "/app/mod.py", "w_r2", tool_result_tokens=1000)
+        mw += [a, r]
+
+        # Control session: identical, but the re-read lands 6 turns after the
+        # boundary (beyond K=5) -> must NOT be counted as amnesia.
+        mc = [_hk7_message("user", content="debug the crash")]
+        a, r = _hk7_tool_call("read_file", "/app/mod.py", "c_r1", tool_result_tokens=1000)
+        mc += [a, r]
+        mc.append(_hk7_message("assistant", content="[context compacted]",
+                               token_count=300, display_kind="context_compaction"))
+        for i in range(2, 7):  # turns 2..6 consume the window with non-read calls
+            a, r = _hk7_tool_call("terminal", f"echo {i}", f"c_t{i}", tool_result_tokens=10)
+            mc += [a, r]
+        a, r = _hk7_tool_call("read_file", "/app/mod.py", "c_r2", tool_result_tokens=1000)
+        mc += [a, r]
+
+        db = _hk7_seed_db(Path(self.temp_dir) / "ac3.db", [
+            {"id": "hk7_amn_window", "input_tokens": 8000, "messages": mw},
+            {"id": "hk7_amn_control", "input_tokens": 8000, "messages": mc},
+        ])
+
+        def run():
+            return (hermes_reader.compute_session_context_audit("hk7_amn_window"),
+                    hermes_reader.compute_session_context_audit("hk7_amn_control"))
+        win, ctl = _hk7_with_state_db(db, run)
+
+        self.assertEqual(win["compaction_events"], 1)
+        self.assertGreater(win["amnesia_reread_tokens"], 0)
+        self.assertEqual(win["amnesia_reread_tokens"], 1000)
+        # Amnesia must never exceed the session's input footprint.
+        self.assertLessEqual(win["amnesia_reread_tokens"], win["total_prompt_tokens"])
+        # Boundary: re-read outside the K-turn window is not amnesia.
+        self.assertEqual(ctl["compaction_events"], 1)
+        self.assertEqual(ctl["amnesia_reread_tokens"], 0)
+
+    def test_ac4_reader_incremental_cache_hit(self):
+        """§3.6.1/§6.4 two analytics runs with unmodified session files rebuild
+        the audit only on the first pass -> 100% incremental cache hit; a file
+        mutation forces a rebuild."""
+        import api.services.hermes_reader as hr_mod
+
+        def mk(sid):
+            a, r = _hk7_tool_call("read_file", f"/repo/{sid}.py", f"{sid}_r",
+                                  tool_result_tokens=400)
+            return {"id": sid, "input_tokens": 3000,
+                    "messages": [_hk7_message("user", content="go"), a, r]}
+
+        db = _hk7_seed_db(Path(self.temp_dir) / "ac4.db",
+                          [mk("s1"), mk("s2"), mk("s3")])
+        n_sessions = 3
+
+        orig_build = hr_mod.HermesReader._build_context_audit
+        calls: list = []
+
+        def counting_build(self, conn, session_id):
+            calls.append(session_id)
+            return orig_build(self, conn, session_id)
+
+        hr_mod.HermesReader._build_context_audit = counting_build
+        try:
+            def run_twice():
+                a = hermes_reader.get_context_tax_analytics(days=30)
+                built_pass1 = len(calls)
+                b = hermes_reader.get_context_tax_analytics(days=30)
+                built_pass2 = len(calls)
+                return built_pass1, built_pass2, a, b
+            built_pass1, built_pass2, a, b = _hk7_with_state_db(db, run_twice)
+        finally:
+            hr_mod.HermesReader._build_context_audit = orig_build
+
+        # Pass 1 builds every session; pass 2 (unchanged files) rebuilds none.
+        self.assertEqual(built_pass1, n_sessions)
+        self.assertEqual(built_pass2 - built_pass1, 0)
+        self.assertEqual(a, b)  # deterministic, identical aggregate
+
+        # Mutation -> the changed session is re-parsed on the next run.
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE sessions SET input_tokens = 5000 WHERE id = 's2'")
+        conn.commit()
+        conn.close()
+        calls.clear()
+        hr_mod.HermesReader._build_context_audit = counting_build
+        try:
+            built_pass3 = _hk7_with_state_db(
+                db, lambda: (hermes_reader.get_context_tax_analytics(days=30), len(calls))[1])
+        finally:
+            hr_mod.HermesReader._build_context_audit = orig_build
+        self.assertGreater(built_pass3, 0)
+
+    def test_ac5_skill_roi_and_loop_guardrails(self):
+        """§3.4/§3.6.2/§6.5 the Skill ROI auditor flags dormant skills and the
+        runaway-loop circuit breaker trips on the exact configured thresholds."""
+        import api.services.hermes_reader as hr_mod
+        from api.config import (MAX_CONSECUTIVE_TOOL_ERRORS,
+                                MAX_SESSION_EXPLORATION_MIN_TURNS,
+                                MAX_SESSION_EXPLORATION_THRASH_RATIO,
+                                MAX_SINGLE_SESSION_CLOUD_COST_USD)
+
+        # ---- Skill ROI endpoint over a synthetic skills tree + session db ----
+        skills_root = Path(self.temp_dir) / "ac5_skills"
+        (skills_root / "alpha").mkdir(parents=True)
+        (skills_root / "alpha" / "SKILL.md").write_text(
+            "---\nname: alpha\ndescription: Alpha skill router line\n---\n"
+            + "Alpha body. " * 15, encoding="utf-8")
+        (skills_root / "ghost").mkdir(parents=True)
+        (skills_root / "ghost" / "SKILL.md").write_text(
+            "---\nname: ghost\ndescription: Never invoked\n---\nGhost body.\n",
+            encoding="utf-8")
+
+        db = Path(self.temp_dir) / "ac5_roi.db"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at REAL)")
+        conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                     "session_id TEXT, role TEXT, content TEXT, tool_calls TEXT)")
+        conn.execute("INSERT INTO sessions VALUES ('roi1', ?)", (time.time() - 60,))
+        calls = json.dumps([
+            {"id": "k1", "function": {"name": "skill_view", "arguments": json.dumps({"name": "alpha"})}},
+            {"id": "k2", "function": {"name": "read_file", "arguments": json.dumps({"path": "/r.py"})}},
+        ])
+        conn.execute("INSERT INTO messages (session_id, role, content, tool_calls) VALUES ('roi1','assistant','',?)", (calls,))
+        conn.execute("INSERT INTO messages VALUES (NULL,'roi1','tool','ok',NULL)")
+        conn.commit()
+        conn.close()
+
+        orig_dir = hr_mod.HERMES_SKILLS_DIR
+        orig_dbs = hr_mod.HermesReader._get_all_state_dbs
+        hermes_reader.invalidate_skill_roi_cache()
+        try:
+            hr_mod.HERMES_SKILLS_DIR = skills_root
+            hr_mod.HermesReader._get_all_state_dbs = lambda self: [db]
+            res = self.client.get("/api/skills/roi?days=30")
+        finally:
+            hr_mod.HERMES_SKILLS_DIR = orig_dir
+            hr_mod.HermesReader._get_all_state_dbs = orig_dbs
+            hermes_reader.invalidate_skill_roi_cache()
+
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        by_name = {s["name"]: s for s in data["skills"]}
+        self.assertIn("alpha", by_name)
+        self.assertIn("ghost", by_name)
+        self.assertFalse(by_name["alpha"]["is_dormant_dead"])
+        self.assertGreaterEqual(by_name["alpha"]["invocations"], 1)
+        self.assertTrue(by_name["ghost"]["is_dormant_dead"])
+        self.assertEqual(by_name["ghost"]["invocations"], 0)
+        self.assertIn("ghost", data["dead_skills"])
+        self.assertEqual(data["totals"]["installed_skills"], 2)
+        self.assertEqual(data["totals"]["dormant_dead_count"], 1)
+        # Footprint invariant survives the endpoint serialization.
+        for s in data["skills"]:
+            self.assertEqual(s["skill_token_weight"],
+                             s["router_description_tokens"] + s["body_tokens"])
+
+        # ---- Runaway loop circuit breaker: exact threshold boundaries ----
+        tracker = LiveTracker(live_dir=Path(self.temp_dir) / "ac5_live")
+        sessions = [
+            # streak exactly at threshold -> trips.
+            {"session_id": "at_thr", "platform": "cron",
+             "consecutive_tool_errors": MAX_CONSECUTIVE_TOOL_ERRORS, "turns": 3},
+            # one below -> must NOT trip.
+            {"session_id": "below_thr", "platform": "cron",
+             "consecutive_tool_errors": MAX_CONSECUTIVE_TOOL_ERRORS - 1, "turns": 3},
+            # 10+ turns, ratio strictly > 0.8 -> thrash trips.
+            {"session_id": "thrash", "ingress_channel": "pantheon_subagent",
+             "is_subagent": True, "turns": MAX_SESSION_EXPLORATION_MIN_TURNS,
+             "files_read": [f"/p/{i}.py" for i in range(10)], "files_edited": ["/p/0.py"]},
+            # ratio exactly 0.8 -> NOT strictly greater -> must not trip.
+            {"session_id": "ratio_edge", "ingress_channel": "pantheon_subagent",
+             "is_subagent": True, "turns": MAX_SESSION_EXPLORATION_MIN_TURNS,
+             "files_read": [f"/q/{i}.py" for i in range(10)],
+             "files_edited": [f"/q/{i}.py" for i in range(2)]},
+            # under the min-turn gate, even at 100% waste -> must not trip.
+            {"session_id": "few_turns", "ingress_channel": "pantheon_subagent",
+             "is_subagent": True, "turns": MAX_SESSION_EXPLORATION_MIN_TURNS - 1,
+             "files_read": [f"/r/{i}.py" for i in range(10)], "files_edited": []},
+            # cloud cost above ceiling -> trips.
+            {"session_id": "rich_cloud", "platform": "cron", "model": "gemini-3.8-flash",
+             "total_prompt_tokens": 100_000_000, "total_output_tokens": 1_000_000},
+            # local APU run prices at $0 -> never trips the cost ceiling.
+            {"session_id": "local_run", "platform": "cron", "model": "qwen3.8-flash-next:262k",
+             "total_prompt_tokens": 100_000_000, "total_output_tokens": 1_000_000},
+            # interactive human channel is exempt from every breaker.
+            {"session_id": "human", "platform": "telegram", "consecutive_tool_errors": 99,
+             "turns": 40, "files_read": ["/a.py"], "files_edited": []},
+        ]
+        violations = tracker.evaluate_loop_guardrails(sessions, send=False)
+        by_sid: dict = {}
+        for v in violations:
+            by_sid.setdefault(v["session_id"], set()).add(v["alert_type"])
+
+        self.assertIn("consecutive_tool_errors", by_sid.get("at_thr", set()))
+        self.assertNotIn("below_thr", by_sid)
+        self.assertEqual(by_sid.get("thrash"), {"exploration_thrash"})
+        self.assertNotIn("ratio_edge", by_sid)
+        self.assertNotIn("few_turns", by_sid)
+        self.assertEqual(by_sid.get("rich_cloud"), {"cloud_cost_ceiling"})
+        self.assertNotIn("local_run", by_sid)
+        self.assertNotIn("human", by_sid)
+
+        # Sanity: the configured thresholds match the spec defaults.
+        self.assertEqual(MAX_CONSECUTIVE_TOOL_ERRORS, 5)
+        self.assertEqual(MAX_SESSION_EXPLORATION_THRASH_RATIO, 0.8)
+        self.assertEqual(MAX_SESSION_EXPLORATION_MIN_TURNS, 10)
+        self.assertEqual(MAX_SINGLE_SESSION_CLOUD_COST_USD, 5.0)
 
 
 if __name__ == "__main__":
