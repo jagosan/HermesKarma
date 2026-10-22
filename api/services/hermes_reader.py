@@ -19,6 +19,7 @@ from api.config import (
     HERMES_SKILLS_DIR,
     HERMES_CRON_DIR,
     HERMES_PROFILES_DIR,
+    KARMA_LIVE_DIR,
 )
 from api.services.metadata_service import metadata_service
 from api.services.pricing_engine import pricing_engine
@@ -184,6 +185,94 @@ def model_throughput_profile(model_name: str, is_local: Optional[bool] = None) -
 
 # Longest-context local model advertised on the instrument cluster.
 LONGEST_CONTEXT_LOCAL_MODEL = "qwen3.8-flash-next:262k"
+
+
+# ---------------------------------------------------------------------------
+# SPEC-HK-007: 4-Tier Context Tax, Spatial Navigation ROI & Harness Telemetry
+#
+# Bucket model (mutually exclusive, exhaustive over a session's input tokens):
+#   T1 cold_start_tokens        — system prompt, MEMORY.md/USER.md, active
+#                                 SKILL.md router descriptions, tool/MCP schemas.
+#                                 Explicit hook emission wins, then Turn-1
+#                                 baseline minus user prompt, then system
+#                                 prompt token estimate.
+#   T2 spatial_index_tokens     — docs/MAP.md, 00_AI_CONTEXT_OVERVIEW.md and
+#                                 graphify topology queries.
+#   T3 exploration_waste_tokens — reads of files never edited in the session;
+#                                 in pure Q&A sessions (0 edits) only redundant
+#                                 re-reads and failed/empty search sweeps count.
+#   T4 productive_tokens        — everything else, computed by subtraction so
+#                                 the strict invariant
+#                                 T1 + T2 + T3 + T4 == total_prompt_tokens
+#                                 always holds (reconcile_context_buckets).
+# ---------------------------------------------------------------------------
+
+INGRESS_CHANNELS = ("cli", "webui", "telegram", "cron", "pantheon_subagent")
+
+_SPATIAL_INDEX_FILE_MARKERS = ("map.md", "00_ai_context_overview.md")
+_GRAPHIFY_MARKERS = ("graphify", ".graphify", "symbol_graph")
+
+_READ_TOOL_NAMES = {
+    "read_file", "read", "view_file", "view", "cat", "grep", "grep_code",
+    "search_files", "ripgrep", "find", "ls", "list_files", "list_directory",
+    "read_many_files", "codebase_retrieval", "search_code", "glob",
+}
+_EDIT_TOOL_NAMES = {
+    "write_file", "write", "edit_file", "edit", "patch", "patch_file",
+    "multi_edit", "create_file", "create", "replace", "str_replace_editor",
+    "write_to_file", "delete_file", "move_file",
+}
+
+_SPATIAL_GUIDANCE_FIRST_TURNS = 3   # spec 3.2A: MAP.md read within first 3 turns
+_AMNESIA_REREAD_WINDOW_TURNS = 5    # spec 3.3: K assistant turns after compaction
+_TOP_TRASH_LIMIT = 10
+_MAP_DRIFT_COMMIT_THRESHOLD = int(os.getenv("HERMES_KARMA_MAP_DRIFT_COMMITS", "15"))
+_MAX_AUDITED_SESSIONS = int(os.getenv("HERMES_KARMA_MAX_AUDIT_SESSIONS", "2000"))
+_DEFAULT_INPUT_USD_PER_MILLION = 0.75  # counterfactual floor (Gemini Flash class)
+
+
+def estimate_tokens(text: Optional[str]) -> int:
+    """Cheap deterministic token estimate (~4 chars/token) when no exact count exists."""
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
+
+
+def reconcile_context_buckets(total_prompt_tokens: Any, cold_start: Any,
+                              spatial_index: Any, exploration: Any) -> tuple:
+    """SPEC-HK-007 §3.1: force ``T1 + T2 + T3 + T4 == total_prompt_tokens``.
+
+    Returns ``(t1, t2, t3, t4)`` of non-negative ints summing exactly to the
+    (non-negative) total. Over-attribution is trimmed exploration-first, then
+    spatial, then cold start; the residual always lands in the productive
+    bucket so the four tiers can never double-count or under-count the total.
+    """
+    total = max(0, int(total_prompt_tokens or 0))
+    t1 = max(0, int(cold_start or 0))
+    t2 = max(0, int(spatial_index or 0))
+    t3 = max(0, int(exploration or 0))
+    over = (t1 + t2 + t3) - total
+    if over > 0:
+        take = min(t3, over); t3 -= take; over -= take
+        take = min(t2, over); t2 -= take; over -= take
+        take = min(t1, over); t1 -= take; over -= take
+    return t1, t2, t3, total - t1 - t2 - t3
+
+
+def classify_ingress_channel(source: Optional[str] = None,
+                             parent_session_id: Optional[str] = None,
+                             platform: Optional[str] = None) -> str:
+    """Map a Hermes session source/platform to its SPEC-HK-007 §3.5 ingress gateway."""
+    key = (source or platform or "").strip().lower()
+    if parent_session_id or key in ("subagent", "pantheon", "delegation", "swarm"):
+        return "pantheon_subagent"
+    if key == "telegram":
+        return "telegram"
+    if key in ("cron", "scheduler", "scheduled"):
+        return "cron"
+    if key in ("webui", "dashboard", "web"):
+        return "webui"
+    return "cli"
 
 
 class HermesReader:
@@ -498,6 +587,11 @@ class HermesReader:
                 item["persona_emoji"] = None
 
             item["is_subagent"] = item.get("source") == "subagent" or bool(item.get("parent_session_id"))
+            # SPEC-HK-007 §3.5: ingress gateway attribution (cli | webui | telegram
+            # | cron | pantheon_subagent) for session list badges & breakdowns.
+            item["ingress_channel"] = classify_ingress_channel(
+                item.get("source"), item.get("parent_session_id")
+            )
 
             item["metadata"] = meta_map.get(sid, {
                 "tags": [],
@@ -574,6 +668,20 @@ class HermesReader:
                 session["delegations"] = [dict(r) for r in cur.fetchall()]
             else:
                 session["delegations"] = []
+
+            # SPEC-HK-007: append the per-session 4-tier context audit. Missing or
+            # malformed traces degrade to a schema-complete zero audit, never raise.
+            # Internal aggregation keys (_path_waste, _compactions, ...) stay in the
+            # reader; the API payload matches the blueprint SessionContextAudit schema.
+            try:
+                session["context_audit"] = {
+                    k: v for k, v in self.compute_session_context_audit(session_id).items()
+                    if not k.startswith("_")
+                }
+            except Exception:
+                session["context_audit"] = self._empty_context_audit(
+                    classify_ingress_channel(session.get("source"), session.get("parent_session_id"))
+                )
 
             return session
 
@@ -1326,6 +1434,708 @@ class HermesReader:
             "daily_activity": daily,
         }
 
+    # ------------------------------------------------------------------
+    # SPEC-HK-007: per-session Context Tax audit engine
+    # ------------------------------------------------------------------
+
+    # In-memory incremental reader cache: session_id -> {_sig, audit}.
+    # _sig = (db st_mtime_ns, db size, message rows for session, transcript_revision)
+    # so an audit is only recomputed when the underlying session actually mutated.
+    _CONTEXT_AUDIT_CACHE: Dict[str, Dict[str, Any]] = {}
+
+    def invalidate_context_audit_cache(self) -> None:
+        """Drop all cached per-session context audits (e.g. after a bulk import)."""
+        self._CONTEXT_AUDIT_CACHE.clear()
+
+    def _empty_context_audit(self, ingress_channel: str = "cli") -> Dict[str, Any]:
+        """Schema-complete zero-value audit so missing data degrades gracefully."""
+        return {
+            "ingress_channel": ingress_channel,
+            "used_map_md": False,
+            "used_graphify": False,
+            "turns_to_first_edit": None,
+            "read_to_edit_ratio": 0.0,
+            "cold_start_tokens": 0,
+            "spatial_index_tokens": 0,
+            "exploration_waste_tokens": 0,
+            "productive_tokens": 0,
+            "compaction_events": 0,
+            "amnesia_reread_tokens": 0,
+            "untouched_files_read": [],
+            "is_coding_session": False,
+            "total_prompt_tokens": 0,
+            "_path_waste": {},
+            "_edited_files": [],
+            "_compactions": [],
+        }
+
+    def _hook_metadata(self, session_id: str) -> Dict[str, Any]:
+        """Explicit live telemetry emitted by hermes_karma_hook.py (if any)."""
+        try:
+            target = KARMA_LIVE_DIR / f"{session_id}.json"
+            if target.is_file():
+                data = json.loads(target.read_text(encoding="utf-8"))
+                return data if isinstance(data, dict) else {}
+        except Exception:
+            pass
+        return {}
+
+    _PATH_ARG_KEYS = (
+        "path", "file_path", "filepath", "file", "target_file",
+        "notebook_path", "abs_path", "filename",
+    )
+
+    @staticmethod
+    def _extract_path_from_args(args: Any) -> Optional[str]:
+        """Best-effort file path extraction from a tool call's argument payload."""
+        if not args:
+            return None
+        parsed = args
+        if isinstance(args, str):
+            s = args.strip()
+            try:
+                parsed = json.loads(s)
+            except Exception:
+                m = re.search(r'"(?:path|file_path|filepath|file)"\s*:\s*"([^"]+)"', s)
+                if m:
+                    return m.group(1)
+                m = re.search(r"(?:^|[\s'\(])(/[^\s'\",)\)]+)", s)
+                return m.group(1) if m else None
+        if isinstance(parsed, dict):
+            for k in HermesReader._PATH_ARG_KEYS:
+                v = parsed.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+            for k in ("arguments", "input", "params"):
+                if k in parsed:
+                    p = HermesReader._extract_path_from_args(parsed[k])
+                    if p:
+                        return p
+        return None
+
+    def _locate_db_for_session(self, session_id: str) -> Optional[Path]:
+        for db_path in self._get_all_state_dbs():
+            conn = self._get_ro_conn_for_db(db_path)
+            if not conn:
+                continue
+            try:
+                row = conn.cursor().execute(
+                    "SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)
+                ).fetchone()
+                if row:
+                    return db_path
+            except Exception:
+                pass
+            finally:
+                conn.close()
+        return None
+
+    def compute_session_context_audit(self, session_id: str) -> Dict[str, Any]:
+        """Compute (or reuse from the incremental mtime cache) the SPEC-HK-007
+        context audit for a single session."""
+        db_path = self._locate_db_for_session(session_id)
+        if not db_path:
+            return self._empty_context_audit()
+        conn = self._get_ro_conn_for_db(db_path)
+        if not conn:
+            return self._empty_context_audit()
+        try:
+            with conn:
+                cur = conn.cursor()
+                st = db_path.stat()
+                msg_count = cur.execute(
+                    "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
+                ).fetchone()[0]
+                rev = 0
+                try:
+                    rrow = cur.execute(
+                        "SELECT transcript_revision FROM sessions WHERE id = ?", (session_id,)
+                    ).fetchone()
+                    rev = int(rrow[0] or 0) if rrow else 0
+                except Exception:
+                    pass
+                sig = (st.st_mtime_ns, st.st_size, int(msg_count or 0), rev)
+                cached = self._CONTEXT_AUDIT_CACHE.get(session_id)
+                if cached and cached.get("_sig") == sig:
+                    return dict(cached["audit"])
+                audit = self._build_context_audit(conn, session_id)
+                self._CONTEXT_AUDIT_CACHE[session_id] = {"_sig": sig, "audit": audit}
+                return dict(audit)
+        finally:
+            conn.close()
+
+    def _build_context_audit(self, conn: sqlite3.Connection, session_id: str) -> Dict[str, Any]:
+        """Single-pass walk over a session's message trace producing the audit."""
+        cur = conn.cursor()
+        srow = cur.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        if not srow:
+            return self._empty_context_audit()
+        session = dict(srow)
+
+        msg_cols = self._get_table_columns(cur, "messages")
+        where = "session_id = ?"
+        if "active" in msg_cols and "compacted" in msg_cols:
+            where += " AND (active = 1 OR compacted = 1)"
+        rows = cur.execute(
+            f"SELECT * FROM messages WHERE {where} ORDER BY id ASC", (session_id,)
+        ).fetchall()
+
+        ingress = classify_ingress_channel(
+            session.get("source"), session.get("parent_session_id")
+        )
+        hook_meta = self._hook_metadata(session_id)
+        sys_prompt = session.get("system_prompt") or ""
+
+        read_events: List[Dict[str, Any]] = []
+        edits: List[tuple] = []          # (path, assistant tool-call turn)
+        turn_index = 0                   # assistant tool-call turn counter
+        turns_to_first_edit: Optional[int] = None
+        used_map_md = any(mk in sys_prompt.lower() for mk in _SPATIAL_INDEX_FILE_MARKERS)
+        used_graphify = False
+        pending: Dict[str, Dict[str, Any]] = {}
+        compactions: List[Dict[str, Any]] = []
+        amnesia_event_ids: set = set()
+        seen_context_tokens = 0
+        first_user_prompt_tokens: Optional[int] = None
+
+        for row in rows:
+            m = dict(row)
+            role = (m.get("role") or "").lower()
+            content = m.get("content") or ""
+            row_tokens = int(m.get("token_count") or 0) or estimate_tokens(content)
+            seen_context_tokens += row_tokens
+
+            # Compaction boundary: Hermes stores a compressed summary row.
+            display_kind = str(m.get("display_kind") or "").lower()
+            is_summary = (m.get("_compressed_summary") == 1) or display_kind in (
+                "compaction", "context_compaction", "context_summary",
+            )
+            if is_summary:
+                pre_tok = max(0, seen_context_tokens - row_tokens)
+                post_tok = row_tokens
+                compactions.append({
+                    "pre_compaction_tokens": pre_tok,
+                    "post_compaction_tokens": post_tok,
+                    "tokens_reclaimed": max(0, pre_tok - post_tok),
+                    "compression_ratio": round(1.0 - (post_tok / pre_tok), 4) if pre_tok > 0 else 0.0,
+                    "turn": turn_index,
+                    "pre_reads": {
+                        e["path"] for e in read_events
+                        if e.get("path") and e["turn"] <= turn_index
+                    },
+                })
+                continue
+
+            if role == "user" and first_user_prompt_tokens is None and content.strip():
+                first_user_prompt_tokens = int(m.get("token_count") or 0) or estimate_tokens(content)
+
+            if role == "assistant" and m.get("tool_calls"):
+                try:
+                    calls = json.loads(m["tool_calls"])
+                except Exception:
+                    calls = []
+                if not isinstance(calls, list):
+                    calls = []
+                calls = [c for c in calls if isinstance(c, dict)]
+
+                def _fn_of(call: Dict[str, Any]) -> Dict[str, Any]:
+                    inner = call.get("function")
+                    return inner if isinstance(inner, dict) else {}
+
+                if any(_fn_of(c).get("name") or c.get("name") for c in calls):
+                    turn_index += 1
+                for tc in calls:
+                    fn = _fn_of(tc)
+                    name = str(fn.get("name") or tc.get("name") or "").strip().lower()
+                    if not name:
+                        continue
+                    args = fn.get("arguments", tc.get("arguments"))
+                    path = self._extract_path_from_args(args)
+                    path_l = (path or "").lower()
+                    try:
+                        args_blob = args if isinstance(args, str) else json.dumps(args or {}, default=str)
+                    except Exception:
+                        args_blob = str(args)
+                    args_blob = args_blob.lower()
+                    is_spatial_file = any(mk in path_l for mk in _SPATIAL_INDEX_FILE_MARKERS)
+                    is_graphify = (
+                        ("graphify" in name)
+                        or any(mk in path_l for mk in _GRAPHIFY_MARKERS)
+                        or ("graphify" in args_blob and name in _READ_TOOL_NAMES)
+                    )
+                    if is_graphify:
+                        used_graphify = True
+                    if is_spatial_file and turn_index <= _SPATIAL_GUIDANCE_FIRST_TURNS:
+                        used_map_md = True
+                    if name in _EDIT_TOOL_NAMES and path:
+                        edits.append((path, turn_index))
+                        if turns_to_first_edit is None:
+                            turns_to_first_edit = turn_index
+                    elif name in _READ_TOOL_NAMES or is_graphify:
+                        # graphify topology queries count as spatial reads (spec 3.2).
+                        ev = {
+                            "path": path,
+                            "turn": turn_index,
+                            "kind": "spatial" if (is_spatial_file or is_graphify) else "read",
+                            "tokens": 0,
+                            "failed": False,
+                            "_id": tc.get("id") or f"ev_{len(read_events)}",
+                        }
+                        read_events.append(ev)
+                        if tc.get("id"):
+                            pending[tc["id"]] = ev
+
+            elif role == "tool":
+                tool_call_id = m.get("tool_call_id")
+                ev = pending.pop(tool_call_id, None) if tool_call_id else None
+                if ev is None:
+                    # Fallback: most recent read event still without a result.
+                    for cand in reversed(read_events):
+                        if cand["tokens"] == 0:
+                            ev = cand
+                            break
+                if ev is not None:
+                    ev["tokens"] = max(ev["tokens"], row_tokens)
+                    low = content[:300].lower()
+                    if (
+                        not content.strip()
+                        or "no match" in low or "no matches" in low
+                        or "no results" in low or "0 results" in low
+                        or "not found" in low or low.startswith("error")
+                    ):
+                        ev["failed"] = True
+
+        # ---- Tier 2: spatial index tokens ------------------------------------
+        spatial_index_tokens = sum(e["tokens"] for e in read_events if e["kind"] == "spatial")
+
+        # ---- Tier 3 companion: compaction Amnesia Tax -------------------------
+        # Any read within K assistant turns after a compaction, targeting a file
+        # already read before the compaction and not edited in between, is an
+        # Amnesia Re-Read (spec 3.3).
+        amnesia_reread_tokens = 0
+        for comp in compactions:
+            pre_reads = comp["pre_reads"]
+            comp_turn = comp["turn"]
+            for e in read_events:
+                if e["kind"] != "read" or not e.get("path"):
+                    continue
+                if e["_id"] in amnesia_event_ids:
+                    continue
+                if e["turn"] <= comp_turn or (e["turn"] - comp_turn) > _AMNESIA_REREAD_WINDOW_TURNS:
+                    continue
+                if e["path"] not in pre_reads:
+                    continue
+                if any(p == e["path"] and comp_turn < t <= e["turn"] for p, t in edits):
+                    continue
+                amnesia_event_ids.add(e["_id"])
+                amnesia_reread_tokens += e["tokens"]
+
+        edited_paths = {p for p, _ in edits}
+        is_coding_session = bool(edited_paths) or bool(hook_meta.get("files_edited"))
+        distinct_reads_excl_map = len(
+            {e["path"] for e in read_events if e.get("path") and e["kind"] != "spatial"}
+        )
+        read_to_edit_ratio = round(distinct_reads_excl_map / max(len(edited_paths), 1), 2)
+
+        path_waste: Dict[str, Dict[str, Any]] = {}
+        if is_coding_session:
+            # Tier 3: reads of files that are never modified during the session.
+            for e in read_events:
+                if e["kind"] != "read" or not e.get("path") or e["path"] in edited_paths:
+                    continue
+                w = path_waste.setdefault(e["path"], {"count": 0, "tokens": 0})
+                w["count"] += 1
+                w["tokens"] += e["tokens"]
+            exploration_waste_tokens = sum(w["tokens"] for w in path_waste.values())
+        else:
+            # Pure Q&A / research exemption (spec 3.1 Tier 3 exclusion): primary
+            # target reads are productive; only redundant re-reads and failed or
+            # empty search sweeps count as Exploration Burn.
+            exploration_waste_tokens = 0
+            seen_reads: set = set()
+            for e in read_events:
+                if e["kind"] != "read" or not e.get("path"):
+                    continue
+                if (e["path"] in seen_reads) or e["failed"]:
+                    w = path_waste.setdefault(e["path"], {"count": 0, "tokens": 0})
+                    w["count"] += 1
+                    w["tokens"] += e["tokens"]
+                    exploration_waste_tokens += e["tokens"]
+                else:
+                    seen_reads.add(e["path"])
+
+        # ---- Tier 1: cold start / base harness tax ----------------------------
+        cold_start_tokens = hook_meta.get("cold_start_tokens")
+        if cold_start_tokens is None:
+            turn1 = hook_meta.get("turn1_prompt_tokens")
+            if turn1 is not None and first_user_prompt_tokens is not None:
+                cold_start_tokens = max(0, int(turn1) - first_user_prompt_tokens)
+            else:
+                cold_start_tokens = estimate_tokens(sys_prompt)
+
+        total_prompt_tokens = int(session.get("input_tokens") or 0)
+        t1, t2, t3, t4 = reconcile_context_buckets(
+            total_prompt_tokens, cold_start_tokens, spatial_index_tokens, exploration_waste_tokens
+        )
+
+        untouched = sorted(
+            {
+                e["path"] for e in read_events
+                if e.get("path") and e["kind"] != "spatial" and e["path"] not in edited_paths
+            }
+        )
+
+        return {
+            "ingress_channel": ingress,
+            "used_map_md": used_map_md,
+            "used_graphify": used_graphify,
+            "turns_to_first_edit": turns_to_first_edit,
+            "read_to_edit_ratio": read_to_edit_ratio,
+            "cold_start_tokens": t1,
+            "spatial_index_tokens": t2,
+            "exploration_waste_tokens": t3,
+            "productive_tokens": t4,
+            "compaction_events": len(compactions),
+            "amnesia_reread_tokens": amnesia_reread_tokens,
+            "untouched_files_read": untouched,
+            "is_coding_session": is_coding_session,
+            "total_prompt_tokens": total_prompt_tokens,
+            # Internal aggregation keys (stripped before API serialization by callers):
+            "_path_waste": path_waste,
+            "_edited_files": sorted(edited_paths),
+            "_compactions": [
+                {k: v for k, v in c.items() if k != "pre_reads"} for c in compactions
+            ],
+        }
+
+    # ------------------------------------------------------------------
+    # SPEC-HK-007: aggregated Context Tax / Spatial ROI analytics
+    # ------------------------------------------------------------------
+
+    def _resolve_map_file(self) -> Optional[Path]:
+        env_path = os.getenv("HERMES_KARMA_MAP_PATH")
+        candidates = []
+        if env_path:
+            candidates.append(Path(os.path.expanduser(env_path)))
+        candidates.extend([
+            Path.cwd() / "docs" / "MAP.md",
+            HERMES_DIR / "docs" / "MAP.md",
+        ])
+        for c in candidates:
+            try:
+                if c.is_file():
+                    return c
+            except Exception:
+                continue
+        return None
+
+    def _load_map_content(self) -> tuple:
+        f = self._resolve_map_file()
+        if not f:
+            return None, ""
+        try:
+            return f, f.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return f, ""
+
+    @staticmethod
+    def _path_in_map(path: str, map_content: str) -> bool:
+        if not path or not map_content:
+            return False
+        mc = map_content.lower()
+        p = path.lower()
+        if p in mc:
+            return True
+        base = p.rsplit("/", 1)[-1]
+        return bool(base) and base in mc
+
+    def _compute_map_drift(self, map_file: Optional[Path] = None,
+                           map_content: str = "",
+                           unindexed_candidates: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Map Staleness / Drift detector (spec 3.2C.2).
+
+        Degrades gracefully to ``is_stale: false, commits_since_map_update: 0``
+        when docs/MAP.md is absent or the repo has no git history (blueprint §3.3).
+        """
+        drift: Dict[str, Any] = {
+            "is_stale": False,
+            "map_last_updated_iso": None,
+            "commits_since_map_update": 0,
+            "unindexed_files": [],
+        }
+        if map_file is None:
+            map_file, map_content = self._load_map_content()
+        if not map_file:
+            return drift
+        try:
+            import subprocess
+            map_ts = None
+            root_r = subprocess.run(
+                ["git", "-C", str(map_file.parent), "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if root_r.returncode == 0:
+                root = root_r.stdout.strip()
+                try:
+                    rel = map_file.resolve().relative_to(Path(root).resolve()).as_posix()
+                except Exception:
+                    rel = str(map_file)
+                ct = subprocess.run(
+                    ["git", "-C", root, "log", "-1", "--format=%ct", "--", rel],
+                    capture_output=True, text=True, timeout=5,
+                )
+                sha = subprocess.run(
+                    ["git", "-C", root, "log", "-1", "--format=%H", "--", rel],
+                    capture_output=True, text=True, timeout=5,
+                )
+                out = ct.stdout.strip()
+                if out.isdigit():
+                    map_ts = int(out)
+                    sha_out = sha.stdout.strip()
+                    if sha_out:
+                        cnt = subprocess.run(
+                            ["git", "-C", root, "rev-list", "--count", f"{sha_out}..HEAD"],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        if cnt.returncode == 0 and cnt.stdout.strip().isdigit():
+                            drift["commits_since_map_update"] = int(cnt.stdout.strip())
+            if map_ts is None:
+                # Map never committed: fall back to filesystem mtime.
+                map_ts = int(map_file.stat().st_mtime)
+                cnt = subprocess.run(
+                    ["git", "-C", str(map_file.parent), "rev-list", "--count",
+                     f"--after=@{map_ts}", "HEAD"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if cnt.returncode == 0 and cnt.stdout.strip().isdigit():
+                    drift["commits_since_map_update"] = int(cnt.stdout.strip())
+            import datetime
+            drift["map_last_updated_iso"] = datetime.datetime.fromtimestamp(
+                map_ts, datetime.timezone.utc
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:
+            pass
+        drift["is_stale"] = drift["commits_since_map_update"] > _MAP_DRIFT_COMMIT_THRESHOLD
+        try:
+            drift["unindexed_files"] = [
+                p for p in (unindexed_candidates or [])
+                if not self._path_in_map(p, map_content)
+            ][:_TOP_TRASH_LIMIT]
+        except Exception:
+            drift["unindexed_files"] = []
+        return drift
+
+    def _dominant_cloud_model(self) -> Optional[str]:
+        """Cloud (billable) model with the most input tokens across all state dbs."""
+        best_model, best_tokens = None, -1
+        for db_path in self._get_all_state_dbs():
+            conn = self._get_ro_conn_for_db(db_path)
+            if not conn:
+                continue
+            try:
+                with conn:
+                    cur = conn.cursor()
+                    tables = [r[0] for r in cur.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()]
+                    if "session_model_usage" not in tables:
+                        continue
+                    for r in cur.execute(
+                        "SELECT model, COALESCE(SUM(input_tokens), 0) AS t "
+                        "FROM session_model_usage GROUP BY model"
+                    ).fetchall():
+                        m = r[0] or ""
+                        if not m or self._is_local_model(m, ""):
+                            continue
+                        t = int(r["t"] or 0)
+                        if t > best_tokens:
+                            best_tokens, best_model = t, m
+            except Exception:
+                pass
+            finally:
+                conn.close()
+        return best_model
+
+    def _counterfactual_input_token_usd(self, tokens: int) -> float:
+        """Price N counterfactual input tokens at the dominant cloud model's rate."""
+        if tokens <= 0:
+            return 0.0
+        model = self._dominant_cloud_model()
+        if model:
+            try:
+                cost = pricing_engine.calculate_cost(
+                    model_name=model, input_tokens=tokens, output_tokens=0
+                )
+                if cost and cost > 0:
+                    return float(cost)
+            except Exception:
+                pass
+        return round(_DEFAULT_INPUT_USD_PER_MILLION * tokens / 1_000_000.0, 6)
+
+    def get_context_tax_analytics(self, days: int = 30) -> Dict[str, Any]:
+        """SPEC-HK-007: aggregate 4-tier Context Tax, Spatial Navigation ROI,
+        compaction/amnesia stats, Top Thrash Files and ingress attribution over
+        a rolling window. Per-session audits ride the incremental mtime cache."""
+        days = max(1, int(days or 30))
+        cutoff_ts = time.time() - days * 86400
+
+        breakdown = {
+            "cold_start_tokens": 0,
+            "spatial_index_tokens": 0,
+            "exploration_waste_tokens": 0,
+            "productive_tokens": 0,
+            "amnesia_reread_tokens": 0,
+        }
+        mapped = {"sessions": 0, "ttfe": [], "ratio": [], "waste": [], "spatial": []}
+        unmapped = {"sessions": 0, "ttfe": [], "ratio": [], "waste": []}
+        ingress: Dict[str, Dict[str, int]] = {
+            ch: {"sessions": 0, "total_tokens": 0} for ch in INGRESS_CHANNELS
+        }
+        compaction_events = 0
+        compression_ratios: List[float] = []
+        tokens_reclaimed_total = 0
+        path_waste_global: Dict[str, Dict[str, int]] = {}
+        edited_files_window: set = set()
+        audited_sessions = 0
+        cap_reached = False
+
+        for db_path in self._get_all_state_dbs():
+            if cap_reached:
+                break
+            conn = self._get_ro_conn_for_db(db_path)
+            if not conn:
+                continue
+            try:
+                with conn:
+                    cur = conn.cursor()
+                    tables = [r[0] for r in cur.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()]
+                    if "sessions" not in tables or "messages" not in tables:
+                        continue
+                    s_cols = self._get_table_columns(cur, "sessions")
+                    hidden_clause = "AND hidden = 0" if "hidden" in s_cols else ""
+                    rows = cur.execute(
+                        f"SELECT id, input_tokens, output_tokens FROM sessions "
+                        f"WHERE started_at >= ? {hidden_clause} ORDER BY started_at DESC",
+                        (cutoff_ts,),
+                    ).fetchall()
+                session_rows = [dict(r) for r in rows]
+            except Exception:
+                session_rows = []
+            finally:
+                conn.close()
+
+            for s in session_rows:
+                sid = s.get("id")
+                if not sid:
+                    continue
+                if audited_sessions >= _MAX_AUDITED_SESSIONS:
+                    cap_reached = True
+                    break
+                audited_sessions += 1
+                try:
+                    audit = self.compute_session_context_audit(sid)
+                except Exception:
+                    continue
+
+                for k in ("cold_start_tokens", "spatial_index_tokens",
+                          "exploration_waste_tokens", "productive_tokens",
+                          "amnesia_reread_tokens"):
+                    breakdown[k] += int(audit.get(k) or 0)
+
+                ch = audit.get("ingress_channel") or "cli"
+                bucket = ingress.setdefault(ch, {"sessions": 0, "total_tokens": 0})
+                bucket["sessions"] += 1
+                bucket["total_tokens"] += int(s.get("input_tokens") or 0) + int(s.get("output_tokens") or 0)
+
+                if audit.get("is_coding_session"):
+                    e_w = int(audit.get("exploration_waste_tokens") or 0)
+                    s_tok = int(audit.get("spatial_index_tokens") or 0)
+                    if audit.get("used_map_md") or audit.get("used_graphify"):
+                        mapped["sessions"] += 1
+                        mapped["waste"].append(e_w)
+                        mapped["spatial"].append(s_tok)
+                        if audit.get("turns_to_first_edit") is not None:
+                            mapped["ttfe"].append(float(audit["turns_to_first_edit"]))
+                        mapped["ratio"].append(float(audit.get("read_to_edit_ratio") or 0.0))
+                    else:
+                        unmapped["sessions"] += 1
+                        unmapped["waste"].append(e_w)
+                        if audit.get("turns_to_first_edit") is not None:
+                            unmapped["ttfe"].append(float(audit["turns_to_first_edit"]))
+                        unmapped["ratio"].append(float(audit.get("read_to_edit_ratio") or 0.0))
+
+                for p, w in (audit.get("_path_waste") or {}).items():
+                    g = path_waste_global.setdefault(p, {"count": 0, "tokens": 0})
+                    g["count"] += int(w.get("count") or 0)
+                    g["tokens"] += int(w.get("tokens") or 0)
+                for p in (audit.get("_edited_files") or []):
+                    edited_files_window.add(p)
+                for ev in (audit.get("_compactions") or []):
+                    compaction_events += 1
+                    tokens_reclaimed_total += int(ev.get("tokens_reclaimed") or 0)
+                    if ev.get("compression_ratio") is not None:
+                        compression_ratios.append(float(ev["compression_ratio"]))
+
+        # Counterfactual exploration savings (spec 3.2B): per mapped session,
+        # Net = (E_unmapped_avg - E_session) - S_session, summed across the window.
+        e_unmapped_avg = (
+            (sum(unmapped["waste"]) / len(unmapped["waste"])) if unmapped["waste"] else 0.0
+        )
+        net_saved = 0.0
+        for e_m, s_m in zip(mapped["waste"], mapped["spatial"]):
+            net_saved += (e_unmapped_avg - e_m) - s_m
+        net_saved = int(round(net_saved))
+        spatial_savings_usd = self._counterfactual_input_token_usd(max(0, net_saved))
+
+        map_file, map_content = self._load_map_content()
+        top_thrash_files = [
+            {
+                "path": p,
+                "unedited_read_count": w["count"],
+                "wasted_tokens": w["tokens"],
+                "in_map_md": self._path_in_map(p, map_content),
+            }
+            for p, w in sorted(
+                path_waste_global.items(), key=lambda kv: kv[1]["tokens"], reverse=True
+            )[:_TOP_TRASH_LIMIT]
+        ]
+
+        def _avg(xs: List[float]) -> float:
+            return round(sum(xs) / len(xs), 2) if xs else 0.0
+
+        return {
+            "window_days": days,
+            "token_breakdown": breakdown,
+            "spatial_roi": {
+                "mapped_sessions_count": mapped["sessions"],
+                "unmapped_sessions_count": unmapped["sessions"],
+                "avg_turns_to_first_edit_mapped": _avg(mapped["ttfe"]),
+                "avg_turns_to_first_edit_unmapped": _avg(unmapped["ttfe"]),
+                "avg_read_to_edit_ratio_mapped": _avg(mapped["ratio"]),
+                "avg_read_to_edit_ratio_unmapped": _avg(unmapped["ratio"]),
+                "net_exploration_tokens_saved": net_saved,
+                "counterfactual_spatial_savings_usd": round(spatial_savings_usd, 4),
+                "map_drift": self._compute_map_drift(
+                    map_file=map_file,
+                    map_content=map_content,
+                    unindexed_candidates=sorted(edited_files_window),
+                ),
+            },
+            "compaction_stats": {
+                "total_compactions": compaction_events,
+                "avg_compression_ratio": (
+                    round(sum(compression_ratios) / len(compression_ratios), 4)
+                    if compression_ratios else 0.0
+                ),
+                "total_tokens_reclaimed": tokens_reclaimed_total,
+                "total_amnesia_reread_tokens": breakdown["amnesia_reread_tokens"],
+            },
+            "top_thrash_files": top_thrash_files,
+            "ingress_breakdown": ingress,
+        }
+
     def get_skills_catalog(self) -> List[Dict[str, Any]]:
         """List all autonomous and custom skills in ~/.hermes/skills."""
         skills = []
@@ -1628,7 +2438,7 @@ class HermesReader:
                             msg_row = m_cur.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id ASC LIMIT 1", (s_dict["id"],)).fetchone()
                             if msg_row and msg_row[0]:
                                 s_dict["first_prompt"] = msg_row[0]
-                                if not s_dict.get("title") or s_dict.get("title").startswith("[Workspace::v1:"):
+                                if not s_dict.get("title") or str(s_dict.get("title")).startswith("[Workspace::v1:"):
                                     s_dict["title"] = msg_row[0][:80].replace("\n", " ").strip()
                             elif not s_dict.get("title") and (s_dict.get("source") == "subagent" or s_dict.get("parent_session_id")):
                                 s_dict["title"] = f"Subagent Task ({s_dict['id']})"
