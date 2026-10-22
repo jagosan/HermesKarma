@@ -7,16 +7,18 @@
   - `specs/04-cluster-gauge-refinement-and-mobile-ui.md`: SPEC-HK-004: Mobile responsive drawer & gauge layout.
   - `specs/05-cluster-gauge-and-token-analytics-refinements.md`: SPEC-HK-005: Gauge telemetry binding fix, 240° clock sweep (-210° to +30°), classic palette, output tokens pie & tok/s HUD.
   - `specs/06-default-30d-gpu-history-and-usage-view.md`: SPEC-HK-006: Default 30-day temporal window, historical GPU load graph in Fleet view, and AI Studio temporal usage & cost stacked bar chart.
+  - `specs/07-context-tax-spatial-navigation-roi-harness-telemetry.md`: SPEC-HK-007: Context Tax (4 tiers), Spatial Navigation ROI (MAP.md/graphify), Compaction Amnesia, Dead Skills audit & Ingress attribution.
 
 ## Backend Services (`api/services/`)
 - `hermes_reader.py`: `HermesReader`
   - `get_pantheon_profiles()` -> List[Dict] (Aggregates profiles, subagents, tokens, cost per persona)
   - `get_pantheon_profile_detail(profile_id)` -> Dict (SOUL.md, memory, skills, session history)
   - `get_sessions(limit, offset, source, model, search, persona)` -> Dict
-  - `get_session_by_id(session_id)` -> Dict (Session details, subagents, model usages)
+  - `get_session_by_id(session_id)` -> Dict (Session details, subagents, model usages, context_audit)
   - `get_session_messages(session_id)` -> List[Dict]
   - `get_session_timeline(session_id)` -> List[Dict]
   - `get_analytics_overview(time_range)` -> Dict (Includes dynamic cost reconciliation, monthly cap, and AI Studio temporal_usage)
+  - `get_context_tax_analytics(days)` -> Dict (4-tier context tax, spatial ROI, compaction stats, top thrash files, ingress breakdown)
 - `pricing_engine.py`: `PricingEngine`
   - `get_model_pricing(model_name, billing_provider)` -> Optional[ModelPricing]
   - `calculate_usage_cost(model, input, output, cache_read, cache_write, reasoning, stored_cost)` -> UsageCostEstimate
@@ -33,12 +35,15 @@
   - `GET /api/pantheon/profiles/{profile_id}`: Full persona detail + historical sessions
 - `sessions.py`:
   - `GET /api/sessions`: List sessions (supports `source=subagent`, `persona=<id>`, default 30d window)
-  - `GET /api/sessions/{session_id}`: Single session details & subagents
+  - `GET /api/sessions/{session_id}`: Single session details & subagents & context_audit
 - `live.py`:
   - `GET /api/live-sessions`: Active sessions snapshot
   - `GET /api/live-sessions/stream`: SSE live stream
 - `analytics.py`:
   - `GET /api/analytics/overview`: High-precision multi-model token & reconciled cost analytics + temporal_usage
+  - `GET /api/analytics/context-tax`: 4-tier context tax, spatial ROI, compaction amnesia, top thrash files, ingress
+- `skills.py`:
+  - `GET /api/skills`: Extends base skills with dead/dormant 30d audit & tool error correlation
 - `nodes.py`:
   - `GET /api/nodes`: Multi-node cluster telemetry with Prometheus & APU hardware metrics
   - `GET /api/nodes/history`: Timeseries GPU load, power, and active slots for fleet APUs
@@ -46,8 +51,12 @@
 ## Frontend DOM Elements & Components (`api/static/index.html` & `app.js`)
 - `#tab-pantheon`, `#view-pantheon`: Pantheon Swarm multi-agent grid & detail drawer
 - `#tab-sessions`, `#view-sessions`: Sessions list, subagent badges, filter dropdowns, 30d default range selector
+- `.session-badge-ingress`, `.session-badge-thrash`: Badges for ingress channel and thrash warning
 - `#tab-live`, `#view-live`: Live running sessions & subagent cards
-- `#tab-analytics`, `#view-analytics`: Cost & token distribution charts
+- `#tab-analytics`, `#view-analytics`: Cost & token distribution charts, Context Tax, Spatial ROI
+- `#contextTaxCompositionBar`: 4-tier stacked progress bar (Harness, Spatial, Exploration, Productive)
+- `#spatialRoiScorecard`: Mapped vs Unmapped scorecard (Turns to edit, Net Tokens, Dollar savings, Map Drift)
+- `#topThrashFilesTable`: Top 5 files read without edits
 - `#temporalUsageChart`: AI Studio style stacked bar chart by model (Input, Output, Cost, Total Tokens)
 - `#tab-nodes`, `#view-nodes`: Fleet APU nodes view
 - `#fleetGpuHistoryChart`: Fleet GPU core busy % and power draw timeseries line/area chart
