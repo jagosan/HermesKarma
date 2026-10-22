@@ -4,11 +4,17 @@
 
 Inspired by and built as the Hermes Agent companion to [Claude Code Karma](https://github.com/JayantDevkar/claude-code-karma) by Jayant Devkar.
 
+![Pantheon Swarm Multi-Agent Orchestration](docs/assets/pantheon-swarm.png)
+
+![Inference Velocity & Token Analytics](docs/assets/token-analytics.png)
+
+![Fleet & APU Nodes Instrument Cluster Telemetry](docs/assets/fleet-telemetry.png)
+
 ---
 
 ## 🌟 Overview
 
-When operating heterogeneous agent fleets across local models (Ollama, vLLM, llama.cpp on nodes like *chunkito*) and cloud models (OpenRouter, Nous Portal, Anthropic, OpenAI, Gemini), keeping track of token usage, reasoning traces, execution trajectories, subagent dispatches, and memory evolution is critical.
+When operating heterogeneous agent fleets across local models (Ollama, vLLM, llama.cpp on local APUs and GPU clusters) and cloud models (OpenRouter, Nous Portal, Anthropic, OpenAI, Gemini), keeping track of token usage, reasoning traces, execution trajectories, subagent dispatches, and memory evolution is critical.
 
 **Hermes Karma** provides real-time telemetry, historical session analytics, skill evolution diffing, and terminal focus IPC tailored specifically for Hermes Agent's architecture (`~/.hermes/state.db` SQLite + WAL, `~/.hermes/skills/`, `MEMORY.md`, and `USER.md`).
 
@@ -74,7 +80,7 @@ When operating heterogeneous agent fleets across local models (Ollama, vLLM, lla
 │  • Reads ~/.hermes/config.yaml, MEMORY.md, USER.md, & skills directory          │
 │  • Writes metadata to ~/.hermes_karma/metadata.db (Ticket Links, Tags, Notes)   │
 │  • Terminal Focus IPC: xdotool / wmctrl / tmux socket / AppleScript             │
-└──────────────────────────────────────┬──────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────────────────────────────┘
                                        │ REST / SSE (Port 8020)
                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐

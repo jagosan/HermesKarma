@@ -4,7 +4,7 @@ import json
 import time
 from pathlib import Path
 from typing import List, Dict, Any, AsyncGenerator
-from api.config import KARMA_LIVE_DIR, HERMES_STATE_DB
+from api.config import KARMA_LIVE_DIR, HERMES_STATE_DB, HERMES_DIR
 from api.services.hermes_reader import hermes_reader
 
 
@@ -77,7 +77,7 @@ class LiveTracker:
                         # Check live transcript log for current step / active tool
                         current_tool = None
                         last_line_text = ""
-                        transcript_path = Path(f"~/.hermes/cache/delegation/live/{did}/task-0.log")
+                        transcript_path = HERMES_DIR / "cache" / "delegation" / "live" / did / "task-0.log"
                         if transcript_path.exists():
                             try:
                                 t_lines = transcript_path.read_text(encoding="utf-8").strip().splitlines()
