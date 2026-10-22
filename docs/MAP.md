@@ -8,6 +8,7 @@
   - `specs/05-cluster-gauge-and-token-analytics-refinements.md`: SPEC-HK-005: Gauge telemetry binding fix, 240° clock sweep (-210° to +30°), classic palette, output tokens pie & tok/s HUD.
   - `specs/06-default-30d-gpu-history-and-usage-view.md`: SPEC-HK-006: Default 30-day temporal window, historical GPU load graph in Fleet view, and AI Studio temporal usage & cost stacked bar chart.
   - `specs/07-context-tax-spatial-navigation-roi-harness-telemetry.md`: SPEC-HK-007: Context Tax (4 tiers), Spatial Navigation ROI (MAP.md/graphify), Compaction Amnesia, Dead Skills audit & Ingress attribution.
+  - `specs/08-declarative-fleet-config-and-portable-deployment.md`: SPEC-HK-008: Declarative Fleet Configuration (fleet.yaml/JSON), Universal Hardware Drivers (AMD/NVIDIA/Apple), 12-Factor Portability, Bootstrap CLI (karma init) & Cloud-Native K8s Deployment.
 
 ## Backend Services (`api/services/`)
 - `hermes_reader.py`: `HermesReader`
