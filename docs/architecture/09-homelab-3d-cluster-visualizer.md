@@ -17,13 +17,26 @@ graph TD
             TailscaleLattice[WireGuard Mesh Lattice Lines]
         end
         
-        subgraph NodeChassisGroup ["Procedural Machine Assemblies"]
-            BeehiveChassis[Beehive: Beelink SER8 Squircle]
-            ChunkitoChassis[Chunkito: Minisforum MS-S1 Max SFF]
-            ChubbsChassis[Chubbs: GPD Win Max 2 Clamshell]
-            RemarkableChassis[reMarkable 2 E-Ink Slab]
-            CarmelChassis[Carmel Edge Beelink EQi]
-            PixelChassis[Pixel 9 Pro Visor Slab]
+        subgraph NodeChassisGroup ["Procedural Machine Assemblies (ChassisMeshFactory)"]
+            subgraph ArchetypeGenerators ["Universal Open-Source Archetypes"]
+                GenMiniPc["buildMiniPcMesh()<br/>Squircle + Top Vent + APU"]
+                GenTower["buildTowerMesh()<br/>Workstation / PCIe GPU / SFF"]
+                GenPhone["buildPhoneMesh()<br/>Mobile Slab + OLED Surface"]
+                GenLaptop["buildLaptopMesh()<br/>Clamshell + Angled Display"]
+                GenTablet["buildTabletMesh()<br/>Thin Tablet / E-Ink Slate"]
+                GenRack["buildServerRackMesh()<br/>1U/2U Rackmount + Drives"]
+            end
+            
+            subgraph PresetVariants ["Specialized Homelab Presets"]
+                BeehiveChassis[Beehive: Beelink SER8]
+                ChunkitoChassis[Chunkito: MS-S1 Max]
+                ChubbsChassis[Chubbs: Win Max 2]
+                RemarkableChassis[reMarkable 2 E-Ink]
+                CarmelChassis[Carmel Edge Beelink EQi]
+                PixelChassis[Pixel 9 Pro Visor]
+            end
+            
+            ArchetypeGenerators --> PresetVariants
         end
 
         subgraph InteriorSilicon ["Living Silicon Sub-Meshes"]

@@ -17,11 +17,18 @@ In parallel, the companion `Cluster Visualizer` (`cluster-vis`) project establis
 This specification defines the architecture, data contracts, and implementation plan for a new **Homelab 3D Spatial Visualizer** view in `HermesKarma`. 
 
 We replace the abstract "building/skyscraper" metaphor with a **Translucent Cyber-Chassis & Living Silicon** architectural language:
-1. **Physical Machine Faithful Geometries:** Every homelab node is rendered as a stylized, semi-transparent 3D representation reflecting its real physical chassis (e.g. Minisforum MS-S1 Max SFF workstation, Beelink SER8 squircle mini-PC, GPD Win Max 2 clamshell handheld, reMarkable 2 e-ink tablet slab, Beelink EQi edge gateway, Google Pixel 9 Pro smartphone).
-2. **Visible Interior Silicon & Hardware Telemetry:** The translucent frosted outer shell reveals the interior hardware components—active CPU/APU silicon dies glowing with real-time compute load, 3D volumetric VRAM allocation pools, NVMe flash activity indicators, and thermal exhaust vent gradients.
-3. **Real-Time Dynamic Data Conduits:** Animated 3D Bezier curves span the spatial volume between connected nodes, with photon/packet particles streaming between machines (e.g. LLM prompt context & token decode streams between `chunkito` and `beehive`, Syncthing vault sync pulses, 5-minute OCR batch bursts, surveillance event Cypher streams to Neo4j).
-4. **Docked Micro-Service Modules:** Software daemons and containers (Hermes Runtime, Karma, llama-server, Neo4j, Frigate NVR, SilverBullet, Syncthing) are visualized as modular components docked to each physical chassis, color-coded by real-time health and execution status.
-5. **Interactive Spatial Navigation & Detail Zoom:** Orbit, pan, and pinch-to-zoom camera controls with smooth lerping. Clicking or double-clicking any machine focuses the camera into an isometric hero angle and smoothly slides out a deep telemetry inspector drawer.
+1. **Universal Open-Source Portability & Declarative Hardware Archetypes:** Because `HermesKarma` is an open-source project designed for arbitrary fleet topologies (SPEC-HK-008), the 3D visualizer is fundamentally hardware-agnostic and never locked to a single homelab setup. It defines a declarative chassis taxonomy with first-class procedural 3D models for universal hardware archetypes:
+   - **`mini_pc` (Default Mini-PC):** Compact squircle with top mesh vents, visible motherboard, and glowing APU/iGPU die (Beelink, Intel NUC, Mac Mini, Geekom, Minisforum).
+   - **`tower` (Default Desktop Tower / Workstation):** Vertical or mid-tower SFF chassis with front I/O ports, dual cooling exhaust fans, PSU bay, and a discrete PCIe GPU or high-memory APU accelerator bay (custom desktop PCs, AI workstations, enterprise SFFs).
+   - **`phone` (Default Smartphone / Mobile Endpoint):** Sleek rectangular rounded glass slab with edge frame and glowing OLED touch surface (Pixel, iPhone, Galaxy, Android/iOS clients).
+   - **`laptop` (Default Clamshell / Handheld):** Base keyboard/trackpad tray + angled backlit display lid (MacBooks, ThinkPads, GPD handhelds, Steam Deck).
+   - **`tablet` (Default Thin Tablet / Digital Paper):** Ultra-thin flat slab with border bezels (iPads, reMarkable, Surface, Galaxy Tab).
+   - **`server_rack` (Default 1U/2U Rackmount Server):** Horizontal rack chassis with front hot-swap drive bays and rack-mount ears.
+2. **Physical Machine Faithful Geometries:** Users can configure any node via `fleet.yaml` or `HERMES_KARMA_NODES_JSON` using these archetype shapes, or enable specialized styling variants (e.g. Minisforum MS-S1 Max, Beelink SER8/EQi, GPD Win Max 2, reMarkable 2, Pixel 9 Pro).
+3. **Visible Interior Silicon & Hardware Telemetry:** Translucent frosted outer shells reveal interior computing hardware—active CPU/APU silicon dies glowing with real-time compute load, 3D volumetric VRAM allocation pools, NVMe flash activity indicators, and thermal exhaust vent gradients.
+4. **Real-Time Dynamic Data Conduits:** Animated 3D Bezier curves span the spatial volume between connected nodes, with photon/packet particles streaming between machines (e.g. LLM prompt context & token decode streams between inference nodes and coordinators, Syncthing vault sync pulses, OCR batch bursts, surveillance event streams).
+5. **Docked Micro-Service Modules:** Software daemons and containers (Hermes Runtime, Karma, llama-server, vLLM, Ollama, Neo4j, Frigate NVR, SilverBullet, Syncthing) are visualized as modular components docked to each physical chassis, color-coded by real-time health and execution status.
+6. **Interactive Spatial Navigation & Detail Zoom:** Orbit, pan, and pinch-to-zoom camera controls with smooth lerping. Clicking or double-clicking any machine focuses the camera into an isometric hero angle and smoothly slides out a deep telemetry inspector drawer.
 
 ---
 
@@ -69,49 +76,103 @@ flowchart TD
 
 ---
 
-## 3. Physical Machine Chassis & Visual Language
+## 3. Universal Hardware Archetypes & Procedural Cyber-Chassis
 
-Instead of generic rectangular blocks or skyscrapers, each homelab machine is procedurally constructed using Three.js primitives and custom materials to evoke its actual form factor, industrial design, and cooling footprint:
+To guarantee that `HermesKarma` is completely decoupled from any single user's environment and works out-of-the-box for any public user deploying `fleet.yaml` or `HERMES_KARMA_NODES_JSON`, the 3D visualizer defines a **declarative, universal hardware archetype taxonomy**.
+
+Instead of requiring pre-baked 3D asset downloads (glTF/OBJ) or assuming specific proprietary machines, the visualizer procedurally constructs stylized, semi-transparent cyber-chassis geometries using core Three.js primitives and physical shaders.
+
+### 3.1 Core Open-Source Hardware Archetypes
+
+Every node configured in Hermes Karma maps to one of six core hardware archetypes, with default procedural renderings optimized for instant sub-100ms client hydration:
+
+| Archetype (`chassis_type`) | Real-World Hardware Scope | Procedural 3D Geometry & Dimensions | Translucent Materials & Styling | Internal Living Silicon & Indicators |
+| :--- | :--- | :--- | :--- | :--- |
+| **`mini_pc`**<br/>*(Default Homelab Workhorse)* | Beelink SER/EQ, Intel NUC, Apple Mac Mini, Minisforum, Geekom, Asus PN series. | Compact squircle (rounded box): $W=2.6, H=0.9, D=2.6$, corner radius $r=0.25$. Top circular mesh cooling grille ($r=0.8$). | Frosted silver-aluminum shell (`metalness: 0.75`, `roughness: 0.25`, `transmission: 0.55`, `opacity: 0.78`). | Cyan-glowing motherboard substrate, dual glowing DDR5 RAM SODIMMs, central CPU/APU silicon die pulsing with compute load. |
+| **`tower`**<br/>*(Desktop / AI Workstation / SFF)* | Custom ATX/mATX gaming PCs, AI workstations, Minisforum MS-S1/MS-01, Dell Precision, HP Z-series. | Vertical/SFF workstation tower: $W=4.2, H=1.6, D=3.8$, dual lateral exhaust intake fins, rear 10GbE copper I/O bay, front power cluster. | Industrial matte obsidian shell with smoked glass top/side window (`roughness: 0.18`, `transmission: 0.65`, `opacity: 0.82`, amber edge rim). | Giant central APU/GPU die ($1.2 \times 1.2$) or discrete PCIe accelerator bay; 12 peripheral memory blocks representing inference slots or GPU VRAM banks. |
+| **`phone`**<br/>*(Smartphone / Mobile Client)* | Google Pixel, Apple iPhone, Samsung Galaxy, generic Android/iOS client endpoints. | Curved rectangular smartphone slab: $W=0.9, H=0.1, D=1.8$, raised camera visor/island ($W=0.92, H=0.14, D=0.3$). | Polished obsidian glass front and back (`metalness: 0.9`, `roughness: 0.1`, `transmission: 0.4`), matte metal perimeter frame. | Edge-to-edge OLED screen glowing softly with Syncthing, WebSocket, and push sync indicator pulses. |
+| **`laptop`**<br/>*(Mobile Dev Workstation / Handheld)* | MacBook Pro/Air, ThinkPad, Dell XPS, GPD Win Max, Steam Deck, ASUS ROG Ally. | Clamshell hybrid: Base tray ($W=2.2, H=0.35, D=1.6$) + hinged display lid ($W=2.2, H=1.5, D=0.1$) tilted at $110^\circ$. | Matte gunmetal magnesium alloy; translucent keyboard deck with backlit keys and trackpad/gamepad accents. | Glowing display panel emitting soft code/terminal grid luminescence; internal APU core. |
+| **`tablet`**<br/>*(Digital Paper / Touch Slate)* | reMarkable 2, Apple iPad, Samsung Galaxy Tab, Microsoft Surface. | Ultra-thin slab: $W=2.0, H=0.08, D=2.7$ ($4.7\text{mm}$ scaled profile), vertical edge rail spine. | Paper-white or slate matte finish (`roughness: 0.85`, `metalness: 0.05`), brushed metal edge rail. | Monochrome or OLED surface displaying stroke ripple animations and document sync bursts. |
+| **`server_rack`**<br/>*(1U/2U Rackmount Server)* | Dell PowerEdge, Supermicro, HP ProLiant, custom 19-inch homelab rackmount chassis. | Horizontal low-profile rack unit: $W=4.8, H=0.8, D=4.2$, front rack-mount ears, hot-swap drive bays. | Dark brushed steel chassis, front drive caddy LED arrays (green read, amber write). | Dual redundant PSU glow in rear, multi-core enterprise CPU dies, PCIe riser card indicators. |
+
+### 3.2 Automatic Archetype Inference Engine
+
+When users deploy `HermesKarma` without authoring explicit 3D visualizer configurations, `VisualizerService` inspects the node's existing `hardware`, `tags`, and `role` fields (from SPEC-HK-008 declarative fleet configuration) and dynamically infers the optimal default archetype:
+
+```python
+def infer_chassis_type(node: Dict[str, Any]) -> str:
+    """Infer procedural 3D chassis archetype from declarative node telemetry."""
+    if "chassis_type" in node:
+        return node["chassis_type"]
+    
+    tags = set(t.lower() for t in node.get("tags", []))
+    hw = node.get("hardware", {})
+    gpu_desc = str(hw.get("gpu", "")).lower()
+    role = str(node.get("role", "")).lower()
+    
+    # 1. Mobile & Client Endpoints
+    if any(t in tags for t in ["phone", "mobile", "android", "ios", "pixel", "iphone"]):
+        return "phone"
+    if any(t in tags for t in ["tablet", "e-ink", "remarkable", "ipad"]):
+        return "tablet"
+    if any(t in tags for t in ["laptop", "handheld", "clamshell", "macbook", "bazzite"]):
+        return "laptop"
+        
+    # 2. Enterprise & Rackmount Servers
+    if any(t in tags for t in ["rack", "1u", "2u", "supermicro", "poweredge"]):
+        return "server_rack"
+        
+    # 3. High-Power Desktop Towers & AI Workstations
+    # Conditions: Discrete PCIe GPU, massive VRAM (>64GB), or heavy inference worker role
+    if (hw.get("vram_gb", 0) >= 64 or 
+        any(k in gpu_desc for k in ["rtx", "geforce", "quadro", "a100", "h100", "8060s", "strix"]) or
+        any(t in tags for t in ["tower", "desktop", "workstation", "strix-halo", "heavy_inference"])):
+        return "tower"
+        
+    # 4. Universal Default for Homelab Nodes
+    # Compact Mini-PCs (Beelink, NUC, Mac Mini, SER8, EQi)
+    return "mini_pc"
+```
+
+### 3.3 Reference Homelab Specializations (Bespoke Presets)
+
+For users with specific hardware matching known devices, the visualizer supports optional subtype specializations (`chassis_variant`):
+- `mini_pc` can specialize into `beelink_ser8` (circular top mesh) or `beelink_eqi` (dual RJ45 surveillance gateway).
+- `tower` can specialize into `minisforum_ms_s1_max` (dual lateral exhaust fin stacks, 12-slot APU ring) or `generic_tower`.
+- `laptop` can specialize into `gpd_win_max_2` (split handheld thumbsticks) or `generic_laptop`.
+- `tablet` can specialize into `remarkable_2` (CANVAS e-ink texture & left spine) or `generic_tablet`.
+- `phone` can specialize into `pixel_9_pro` (horizontal camera visor bar) or `generic_phone`.
+
+If an unknown `chassis_variant` is provided, the renderer gracefully falls back to the parent archetype's procedural model.
 
 ```
 [ Homelab 3D Spatial Datum Plane: Y = 0 ]
 
         (Mobile Edge)                          (Capitola Primary Cluster)
     ┌──────────────────────┐                ┌──────────────────────────────┐
-    │  reMarkable 2 Slab   │◄───OCR Stream──┤  Beelink SER8 Mini-PC        │
-    │  [monochrome e-ink]  │                │  (beehive: coordinator)      │
+    │  tablet: reMarkable  │◄───OCR Stream──┤  mini_pc: Beelink SER8       │
+    │  [archetype: tablet] │                │  (beehive: coordinator)      │
     └──────────────────────┘                │  - Ryzen 7 8845HS / 780M     │
                                             │  - Hermes / Karma / Neo4j    │
     ┌──────────────────────┐                └──────────────┬───────────────┘
-    │  GPD Win Max 2       │                               │
-    │  (chubbs: clamshell) │◄──Syncthing Vault Sync────────┤
+    │  laptop: Win Max 2   │                               │
+    │  [archetype: laptop] │◄──Syncthing Vault Sync────────┤
     │  - 7840U / Bazzite   │                               │ Inference Highway
     └──────────────────────┘                               │ (Tokens/s, 12 slots)
                                                            ▼
     ┌──────────────────────┐                ┌──────────────────────────────┐
-    │  Google Pixel 9 Pro  │◄──PWA / Sync───┤  Minisforum MS-S1 Max        │
-    │  [glass visor slab]  │                │  (chunkito: APU Workstation) │
+    │  phone: Pixel 9 Pro  │◄──PWA / Sync───┤  tower: Minisforum MS-S1 Max │
+    │  [archetype: phone]  │                │  (chunkito: APU Workstation) │
     └──────────────────────┘                │  - Strix Halo 128GB Unified  │
                                             │  - Radeon 8060S (40 CUs)     │
         (Carmel Valley Edge)                │  - llama-server ROCm 7.2.4   │
     ┌──────────────────────┐                └──────────────┬───────────────┘
-    │  Beelink EQi Gateway │                               │
-    │  (carmel-edge: NVR)  ├───────Surveillance Cypher─────┘
+    │  mini_pc: Beelink EQi│                               │
+    │  [archetype: mini_pc]├───────Surveillance Cypher─────┘
     │  - Intel Core 3 304  │       Vision Verification Stream
     │  - Frigate QuickSync │
     └──────────────────────┘
 ```
-
-### 3.1 Detailed Chassis Specifications
-
-| Node ID | Physical Model & Role | Chassis Geometry & Dimensions | Translucent Material Styling | Internal Living Silicon & Indicators |
-| :--- | :--- | :--- | :--- | :--- |
-| `beehive` | **Beelink SER8**<br/>*(Primary Coordinator & API Gateway)* | Compact squircle (rounded box): $W=2.6, H=0.9, D=2.6$, corner radius $r=0.25$. Top circular mesh vent cutout ($r=0.8$). | Frosted silver-aluminum shell (`metalness: 0.75`, `roughness: 0.25`, `transmission: 0.55`, `opacity: 0.78`). | Glowing cyan PCB substrate; AMD Ryzen 7 8845HS silicon die; dual glowing DDR5 RAM SODIMMs; Radeon 780M iGPU core pulsing with load. |
-| `chunkito` | **Minisforum MS-S1 Max**<br/>*(Heavy APU Inference Node)* | High-performance mini-workstation: $W=4.2, H=1.6, D=3.8$, dual lateral exhaust intake fins, rear 10GbE copper I/O bay. | Industrial matte obsidian shell with smoked glass top lid (`roughness: 0.18`, `transmission: 0.65`, `opacity: 0.82`, amber edge rim). | Giant central AMD Strix Halo APU die ($1.2 \times 1.2$) with 40 CU grid; 12 peripheral memory blocks representing the 12 inference slots (`-np 12`), lighting up dynamically when occupied. |
-| `chubbs` | **GPD Win Max 2**<br/>*(Handheld Dev Workstation)* | Clamshell hybrid: Base tray ($W=2.2, H=0.35, D=1.6$) + hinged display lid ($W=2.2, H=1.5, D=0.1$) tilted at $110^\circ$. | Matte gunmetal magnesium alloy; translucent keyboard deck with backlit keys and split thumbstick rings. | Glowing 8" display panel emitting soft code/terminal grid luminescence; internal AMD Ryzen 7 7840U core. |
-| `remarkable` | **reMarkable 2**<br/>*(Digital Paper Tablet)* | Ultra-thin slab: $W=2.0, H=0.08, D=2.7$ ($4.7\text{mm}$ scaled profile), left-hand vertical chrome spine. | Paper-white matte finish (`roughness: 0.85`, `metalness: 0.05`), dark chrome edge rail. | Monochrome digital paper surface displaying animated notebook stroke pulses during OCR ingest window. |
-| `carmel-edge` | **Beelink EQi**<br/>*(Edge Surveillance Gateway)* | Sleek silent mini-gateway: $W=2.2, H=0.8, D=2.2$, dual RJ45 Ethernet ports on rear with green/amber link LEDs. | Deep navy frosted polycarbonate (`transmission: 0.5`, `opacity: 0.75`). | Intel Core 3 304 die; integrated NPU engine; dual M.2 NVMe slots (OS flash green LED + Frigate 1TB clip storage amber write LED). |
-| `pixel-9-pro` | **Google Pixel 9 Pro**<br/>*(Mobile Endpoint)* | Curved rectangular smartphone slab: $W=0.9, H=0.1, D=1.8$, raised horizontal camera visor bar ($W=0.92, H=0.14, D=0.3$). | Polished obsidian glass front and back (`metalness: 0.9`, `roughness: 0.1`, `transmission: 0.4`), matte metal frame. | Edge-to-edge OLED screen glowing softly with Syncthing and Telegram sync indicator pulses. |
 
 ---
 
@@ -467,13 +528,15 @@ gantt
 - **Assignee:** `@tigger`
 - **Deliverables:**
   1. Author `api/static/visualizer_scene.js` using Three.js (r160):
-     - Implement procedural geometry generators for each physical chassis without requiring external glTF downloads:
-       - `buildBeelinkSer8Mesh()`: Rounded squircle box, top circular vent, glowing motherboard and 780M core.
-       - `buildMinisforumMsS1MaxMesh()`: SFF workstation, lateral cooling fins, 12 peripheral memory slot cubes, Strix Halo die.
-       - `buildGpdWinMax2Mesh()`: Clamshell base tray + angled backlit screen lid.
-       - `buildRemarkableMesh()`: Ultra-thin e-ink digital paper slab with chrome spine.
-       - `buildBeelinkEqiMesh()`: Compact edge chassis with dual RJ45 Ethernet ports and M.2 NVMe activity bars.
-       - `buildPixel9ProMesh()`: Smartphone slab with raised horizontal camera visor bar.
+     - Implement core procedural geometry generators for open-source hardware archetypes:
+       - `buildMiniPcMesh()`: Universal compact mini-PC squircle with top circular/slotted mesh cooling grille, translucent shell, motherboard plane, dual SODIMM RAM sticks, and central CPU/APU die.
+       - `buildTowerMesh()`: Universal desktop tower / SFF workstation with dual cooling fans, front I/O ports, PSU bay, and discrete PCIe accelerator bay or 12-slot APU ring.
+       - `buildPhoneMesh()`: Universal smartphone slab with rounded corners, camera bump/visor, perimeter metal band, and glowing OLED touch display.
+       - `buildLaptopMesh()`: Universal clamshell laptop/handheld with base keyboard/trackpad tray and angled backlit display screen.
+       - `buildTabletMesh()`: Universal thin tablet / digital paper slate with border bezels and screen surface.
+       - `buildServerRackMesh()`: Universal 1U/2U horizontal rackmount server with front drive caddies and rack-mount ears.
+     - Implement specialized homelab preset styling variants (`beelink_ser8`, `minisforum_ms_s1_max`, `gpd_win_max_2`, `remarkable_2`, `beelink_eqi`, `pixel_9_pro`) extending the core archetype primitives.
+     - Implement dynamic archetype fallback: unknown or unspecified nodes automatically resolve to `infer_chassis_type()` archetypes.
   2. Implement translucent frosted cyber-materials (`MeshPhysicalMaterial`) with glowing edge accents and interior silicon die illumination.
   3. Attach docked hexagonal service chips hovering above each chassis with live health status LEDs.
 
