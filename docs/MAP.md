@@ -9,6 +9,10 @@
   - `specs/06-default-30d-gpu-history-and-usage-view.md`: SPEC-HK-006: Default 30-day temporal window, historical GPU load graph in Fleet view, and AI Studio temporal usage & cost stacked bar chart.
   - `specs/07-context-tax-spatial-navigation-roi-harness-telemetry.md`: SPEC-HK-007: Context Tax (4 tiers), Spatial Navigation ROI (MAP.md/graphify), Compaction Amnesia, Dead Skills audit & Ingress attribution.
   - `specs/08-declarative-fleet-config-and-portable-deployment.md`: SPEC-HK-008: Declarative Fleet Configuration (fleet.yaml/JSON), Universal Hardware Drivers (AMD/NVIDIA/Apple), 12-Factor Portability, Bootstrap CLI (karma init) & Cloud-Native K8s Deployment.
+  - `specs/09-homelab-3d-cluster-visualizer.md`: SPEC-HK-009: Homelab 3D Spatial Visualizer (Interactive Hardware Topology, Translucent Cyber-Chassis & Real-Time Flow Conduits).
+
+- `docs/architecture/`:
+  - `docs/architecture/09-homelab-3d-cluster-visualizer.md`: System topology, Three.js scene graph, spatial coordinates, procedural chassis, dynamic Bezier conduits, and SSE streaming pipeline.
 
 ## Backend Services (`api/services/`)
 - `hermes_reader.py`: `HermesReader`
@@ -50,8 +54,15 @@
 - `nodes.py`:
   - `GET /api/nodes`: Multi-node cluster telemetry with Prometheus & APU hardware metrics
   - `GET /api/nodes/history`: Timeseries GPU load, power, and active slots for fleet APUs
+- `visualizer.py`:
+  - `GET /api/visualizer/topology`: Complete declarative homelab topology, physical chassis configs, docked services & conduit endpoints
+  - `GET /api/visualizer/stream`: Real-time SSE telemetry delta stream (1Hz push with client-side 60Hz interpolation)
 
 ## Frontend DOM Elements & Components (`api/static/index.html` & `app.js`)
+- `#tab-visualizer`, `#view-visualizer`: Homelab 3D Spatial Visualizer interactive WebGL canvas view
+- `#homelabVisualizerCanvas`: Mount point for Three.js WebGL scene
+- `#visInspectorDrawer`: Sliding frosted-glass telemetry & service inspection drawer
+- `visualizer_scene.js`: Three.js procedural chassis generator, Bezier conduit flow particle system & camera orbit director
 - `#tab-pantheon`, `#view-pantheon`: Pantheon Swarm multi-agent grid & detail drawer
 - `#tab-sessions`, `#view-sessions`: Sessions list, subagent badges, filter dropdowns, 30d default range selector
 - `.session-badge-ingress`, `.session-badge-thrash`: Badges for ingress channel and thrash warning
