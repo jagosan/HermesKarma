@@ -226,6 +226,12 @@ function switchTab(tabId) {
   const activePanel = document.getElementById(`view-${tabId}`);
   if (activePanel) activePanel.classList.remove('hidden');
 
+  // SPEC-HK-009 Phase 4: #view-visualizer is a sibling of the scrollable
+  // content <main>; hide that main entirely while the 3D tab is active so the
+  // WebGL viewport gets the full canvas, and pause heavy rendering off-tab.
+  const contentMain = document.getElementById('contentMain');
+  if (contentMain) contentMain.classList.toggle('hidden', tabId === 'visualizer');
+
   if (tabId === 'sessions') loadSessions();
   else if (tabId === 'analytics') loadAnalytics();
   else if (tabId === 'pantheon') loadPantheon();
@@ -234,6 +240,7 @@ function switchTab(tabId) {
   else if (tabId === 'live') loadLiveSessions();
   else if (tabId === 'cron') loadCron();
   else if (tabId === 'nodes') loadNodes();
+  else if (tabId === 'visualizer') loadVisualizer();
   else if (tabId === 'tickets') loadTickets();
 
   lucide.createIcons();
@@ -2646,7 +2653,632 @@ async function syncTicketStatus(provider, ticketKey) {
   }
 }
 
+// ----------------------------------------------------
+// HOMELAB 3D SPATIAL VISUALIZER (SPEC-HK-009 Phase 4, TASK-HK-140)
+// ----------------------------------------------------
+// Owns the #view-visualizer WebGL viewport: scene lifecycle, the
+// OrbitControls camera director with bookmark tweens, raycast chassis
+// picking, the sliding telemetry inspector drawer, and the
+// GET /api/visualizer/stream SSE feed driving the living-silicon scene.
+
+let visScene = null;            // HomelabVisualizerScene instance
+let visControls = null;         // THREE.OrbitControls (ESM shim via index.html)
+let visEventSource = null;      // GET /api/visualizer/stream
+let visTopology = null;         // GET /api/visualizer/topology contract
+let visNodeTelemetry = {};      // node id -> latest SSE delta (SPEC-HK-009 §6.2)
+let visSelectedNodeId = null;
+let visCameraTween = null;
+let visRenderLoopOn = false;
+let visInitFailed = false;
+let visFpsFrames = 0;
+let visFpsWindowStart = 0;
+
+const VIS_CAMERA_PRESETS = {
+  isometric: { position: [11.5, 8.5, 13.5], target: [0, 0.6, 0] },
+  top:       { position: [0.02, 26.0, 0.02], target: [0, 0, 0] },
+  edge:      { position: [19.5, 3.2, 0.8],  target: [0, 1.0, 0] }
+};
+
+const VIS_ARCHETYPE_ICONS = {
+  mini_pc: 'cpu',
+  tower: 'server',
+  phone: 'smartphone',
+  laptop: 'laptop',
+  tablet: 'tablet',
+  server_rack: 'server'
+};
+
+const VIS_SLOT_STYLES = {
+  idle: 'bg-slate-800/80 text-slate-500 border-slate-700/60',
+  prefill: 'bg-amber-500/25 text-amber-300 border-amber-500/50 animate-pulse',
+  decoding: 'bg-emerald-500/25 text-emerald-300 border-emerald-500/50',
+  exclusive: 'bg-purple-500/30 text-purple-300 border-purple-500/60'
+};
+
+const VIS_SERVICE_STATUS_PILLS = {
+  active: 'bg-emerald-950/70 text-emerald-300 border border-emerald-500/30',
+  healthy: 'bg-emerald-950/70 text-emerald-300 border border-emerald-500/30',
+  degraded: 'bg-amber-950/70 text-amber-300 border border-amber-500/30',
+  high: 'bg-amber-950/70 text-amber-300 border border-amber-500/30',
+  error: 'bg-red-950/70 text-red-300 border border-red-500/30',
+  down: 'bg-red-950/70 text-red-300 border border-red-500/30',
+  offline: 'bg-slate-800 text-slate-400 border border-slate-700',
+  suspended: 'bg-slate-800 text-slate-400 border border-slate-700'
+};
+
+// Wait for the Three.js UMD global and the OrbitControls ESM shim. Resolves
+// { three, orbit }; after hardCapMs it proceeds with whatever arrived so a
+// flaky CDN can never wedge the tab.
+function visWaitForLibs(hardCapMs) {
+  hardCapMs = hardCapMs || 10000;
+  const t0 = Date.now();
+  return new Promise(resolve => {
+    const iv = setInterval(() => {
+      const three = typeof window.THREE !== 'undefined';
+      const orbit = typeof window.OrbitControls === 'function';
+      if ((three && orbit) || Date.now() - t0 > hardCapMs) {
+        clearInterval(iv);
+        resolve({ three, orbit });
+      }
+    }, 120);
+  });
+}
+
+function visShowContainerMessage(html) {
+  const c = document.getElementById('visCanvasContainer');
+  if (c) {
+    c.innerHTML = `<div class="w-full h-full flex flex-col items-center justify-center text-center text-slate-500 space-y-2 p-8">${html}</div>`;
+  }
+}
+
+async function loadVisualizer() {
+  const container = document.getElementById('visCanvasContainer');
+  if (!container) return;
+
+  if (visInitFailed) {          // retry on tab re-entry after a failed init
+    visInitFailed = false;
+    container.innerHTML = '';
+  }
+
+  if (visScene) {               // re-entry: resize + resume
+    visScene.resize();
+    return;
+  }
+
+  const libs = await visWaitForLibs();
+  if (!libs.three || typeof window.HomelabVisualizerScene !== 'function') {
+    visInitFailed = true;
+    visShowContainerMessage(
+      '<i data-lucide="cloud-off" class="w-8 h-8 text-slate-600"></i>' +
+      '<span class="text-sm">3D engine unavailable — Three.js r160 failed to load from CDN.</span>' +
+      '<span class="text-xs">Check network access to cdn.jsdelivr.net and reload.</span>');
+    if (window.lucide) lucide.createIcons();
+    return;
+  }
+
+  // Initial topology contract (SPEC-HK-009 §6.1)
+  try {
+    const res = await fetch('/api/visualizer/topology');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    visTopology = await res.json();
+  } catch (err) {
+    visInitFailed = true;
+    visShowContainerMessage(
+      '<i data-lucide="plug-zap" class="w-8 h-8 text-rose-500"></i>' +
+      `<span class="text-sm">Failed to load homelab topology: ${escapeHtml(err.message)}</span>` +
+      '<span class="text-xs">GET /api/visualizer/topology — retry by switching tabs.</span>');
+    if (window.lucide) lucide.createIcons();
+    return;
+  }
+
+  try {
+    // Scene graph + WebGL renderer mount into #visCanvasContainer. The scene
+    // degrades to scene-graph-only (no throw) when WebGL is unavailable.
+    visScene = new window.HomelabVisualizerScene('#visCanvasContainer');
+    visScene.loadTopology(visTopology);
+    visInitOrbitControls();
+    visSetupPicking();
+    visRunRenderLoop();
+    visConnectStream();
+    visUpdateHud(null);
+  } catch (err) {
+    console.error('[HomelabVisualizer] Phase 4 init failed:', err);
+    visInitFailed = true;
+    visScene = null;
+    visShowContainerMessage(
+      '<i data-lucide="bug" class="w-8 h-8 text-rose-500"></i>' +
+      `<span class="text-sm">Visualizer init error: ${escapeHtml(err.message)}</span>`);
+    if (window.lucide) lucide.createIcons();
+  }
+}
+
+// --- Camera director (OrbitControls + smooth bookmark tweens) --------------
+
+function visInitOrbitControls() {
+  if (visControls || !visScene) return;
+  if (typeof window.OrbitControls !== 'function') {
+    console.warn('[HomelabVisualizer] OrbitControls shim not loaded; camera presets only.');
+    return;
+  }
+  try {
+    const el = (visScene.renderer && visScene.renderer.domElement) || document.getElementById('visCanvasContainer');
+    visControls = new window.OrbitControls(visScene.camera, el);
+    visControls.enableDamping = true;
+    visControls.dampingFactor = 0.08;
+    visControls.minDistance = 5.0;
+    visControls.maxDistance = 35.0;
+    visControls.maxPolarAngle = Math.PI * 0.495;  // keep the camera above the datum plane
+    visControls.autoRotateSpeed = 0.6;
+    visControls.target.set(0, 0.6, 0);
+    visControls.update();
+  } catch (err) {
+    console.warn('[HomelabVisualizer] OrbitControls unavailable:', err && err.message);
+    visControls = null;
+  }
+}
+
+function visEaseInOutCubic(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+function visTweenCamera(toPos, toTarget, durationMs) {
+  if (!visScene) return;
+  const T = visScene.THREE;
+  visCameraTween = {
+    t: 0,
+    dur: Math.max(0.15, (durationMs || 700) / 1000),
+    fromPos: visScene.camera.position.clone(),
+    fromTarget: visControls ? visControls.target.clone() : new T.Vector3(0, 0.6, 0),
+    toPos: new T.Vector3(toPos[0], toPos[1], toPos[2]),
+    toTarget: new T.Vector3(toTarget[0], toTarget[1], toTarget[2])
+  };
+}
+
+function visStepCameraTween(dt) {
+  const tw = visCameraTween;
+  if (!tw || !visScene) return;
+  tw.t = Math.min(1, tw.t + dt / tw.dur);
+  const e = visEaseInOutCubic(tw.t);
+  visScene.camera.position.lerpVectors(tw.fromPos, tw.toPos, e);
+  if (visControls) visControls.target.lerpVectors(tw.fromTarget, tw.toTarget, e);
+  else visScene.camera.lookAt(tw.toTarget);
+  if (tw.t >= 1) visCameraTween = null;
+}
+
+function visHighlightCameraPreset(name) {
+  const map = { isometric: 'visBtnCamIso', top: 'visBtnCamTop', edge: 'visBtnCamEdge' };
+  Object.keys(map).forEach(key => {
+    const btn = document.getElementById(map[key]);
+    if (!btn) return;
+    btn.className = `vis-preset-btn px-2.5 py-1 text-[11px] font-semibold rounded ${
+      key === name ? 'bg-brand-600 text-white' : 'text-slate-400 hover:text-slate-200'}`;
+  });
+}
+
+function visSetCameraPreset(name) {
+  const preset = VIS_CAMERA_PRESETS[name];
+  if (!preset || !visScene) return;
+  visHighlightCameraPreset(name);
+  visTweenCamera(preset.position, preset.target, 750);
+}
+
+function visResetCamera() {
+  visSelectedNodeId = null;
+  visCloseDrawer();
+  if (visControls) {
+    visControls.autoRotate = false;
+    const btn = document.getElementById('btnVisAutoRotate');
+    if (btn) btn.classList.remove('text-brand-400');
+  }
+  visSetCameraPreset('isometric');
+}
+
+function visToggleAutoRotate() {
+  if (!visControls) return;
+  visControls.autoRotate = !visControls.autoRotate;
+  const btn = document.getElementById('btnVisAutoRotate');
+  if (btn) btn.classList.toggle('text-brand-400', visControls.autoRotate);
+}
+
+// --- Layout switch & conduit flow controls ---------------------------------
+
+function visSetLayout(mode) {
+  if (mode !== 'spatial' && mode !== 'topology') return;
+  if (visScene) visScene.setLayout(mode);
+  const activeCls = 'px-3 py-1 text-xs font-semibold rounded bg-brand-600 text-white';
+  const idleCls = 'px-3 py-1 text-xs font-semibold rounded text-slate-400 hover:text-slate-200';
+  const bS = document.getElementById('visBtnSpatial');
+  const bT = document.getElementById('visBtnTopology');
+  if (bS) bS.className = mode === 'spatial' ? activeCls : idleCls;
+  if (bT) bT.className = mode === 'topology' ? activeCls : idleCls;
+}
+
+function visSetSpeed(value) {
+  if (visScene) visScene.setConduitFlowSpeed(Number(value) || 1.0);
+}
+
+// --- Raycast picking --------------------------------------------------------
+
+function visSetupPicking() {
+  const el = (visScene.renderer && visScene.renderer.domElement) || document.getElementById('visCanvasContainer');
+  if (!el) return;
+  const T = visScene.THREE;
+  const raycaster = new T.Raycaster();
+  const ndc = new T.Vector2();
+  let downX = 0, downY = 0;
+
+  el.addEventListener('pointerdown', (e) => {
+    downX = e.clientX;
+    downY = e.clientY;
+    visCameraTween = null;      // user input interrupts a camera bookmark tween
+  });
+
+  el.addEventListener('pointerup', (e) => {
+    // Treat drags (orbit/pan) as navigation, not selection.
+    if (Math.hypot(e.clientX - downX, e.clientY - downY) > 6) return;
+    const rect = el.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(ndc, visScene.camera);
+    const hits = raycaster.intersectObjects(visScene.nodeGroups.children, true);
+    if (hits.length) {
+      let obj = hits[0].object;
+      while (obj && !(obj.name && obj.name.indexOf('node:') === 0)) obj = obj.parent;
+      if (obj) {
+        visFocusNode(obj.name.slice(5));
+        return;
+      }
+    }
+    // Clicked empty space: slide the inspector back out.
+    visCloseDrawer();
+  });
+}
+
+function visFocusNode(nodeId) {
+  if (!visScene) return;
+  const entry = visScene.nodes.get(nodeId);
+  if (!entry) return;
+  visSelectedNodeId = nodeId;
+
+  const T = visScene.THREE;
+  const p = entry.group.position;
+  const fp = (entry.group.userData && entry.group.userData.footprint) || { w: 2.4, h: 1.0, d: 2.4 };
+  const ch = Math.max(fp.h || 1, 0.6);
+  const dist = Math.max(5.5, Math.min(14, Math.max(fp.w, fp.d) * 2.4 + ch * 3));
+
+  // Isometric hero angle: preserve the viewer's current azimuth around the
+  // node, rise to a 35-degree-ish elevation above the chassis.
+  const cam = visScene.camera;
+  let dir = new T.Vector3(cam.position.x - p.x, 0, cam.position.z - p.z);
+  if (dir.lengthSq() < 1e-6) dir = new T.Vector3(1, 0, 1);
+  dir.normalize();
+  const heroPos = [
+    p.x + dir.x * dist * 0.82,
+    p.y + ch + dist * 0.58,
+    p.z + dir.z * dist * 0.82
+  ];
+  const heroTarget = [p.x, p.y + ch * 0.5, p.z];
+
+  visTweenCamera(heroPos, heroTarget, 650);
+  visOpenDrawer();
+  visRenderDrawerBody();
+}
+
+// --- Sliding telemetry inspector drawer -------------------------------------
+
+function visOpenDrawer() {
+  const d = document.getElementById('visInspectorDrawer');
+  if (d) d.classList.remove('translate-x-[110%]');
+}
+
+function visCloseDrawer() {
+  const d = document.getElementById('visInspectorDrawer');
+  if (d) d.classList.add('translate-x-[110%]');
+  visSelectedNodeId = null;
+}
+
+// Close on Escape while the 3D tab owns the screen.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && visSelectedNodeId) visCloseDrawer();
+});
+
+function visLoadBar(pct, barCls) {
+  const w = Math.max(0, Math.min(100, Number(pct) || 0));
+  return `<div class="h-2 rounded-full bg-slate-800 overflow-hidden">` +
+    `<div class="h-full rounded-full ${barCls} transition-all duration-500" style="width:${w}%"></div></div>`;
+}
+
+function visLoadPctClass(pct) {
+  if (pct >= 85) return 'bg-rose-500';
+  if (pct >= 60) return 'bg-amber-400';
+  return 'bg-emerald-400';
+}
+
+function visVramPctClass(pct) {
+  if (pct > 90) return 'bg-rose-500';
+  if (pct >= 70) return 'bg-amber-400';
+  return 'bg-cyan-400';
+}
+
+function visRenderDrawerBody() {
+  if (!visScene || !visSelectedNodeId) return;
+  const body = document.getElementById('visDrawerBody');
+  if (!body) return;
+  const entry = visScene.nodes.get(visSelectedNodeId);
+  if (!entry) return;
+
+  const nd = entry.nodeData || {};
+  const hw = nd.hardware || {};
+  const t = visNodeTelemetry[visSelectedNodeId] || {};
+  const online = Object.keys(t).length ? t.online !== false : true;
+  const limit = Number(hw.thermal_limit_c) || 95;
+
+  // Drawer header
+  const iconIcon = VIS_ARCHETYPE_ICONS[entry.archetype] || 'server';
+  const iconEl = document.getElementById('visDrawerIcon');
+  if (iconEl) iconEl.innerHTML = `<i data-lucide="${iconIcon}" class="w-4 h-4"></i>`;
+  const titleEl = document.getElementById('visDrawerTitle');
+  if (titleEl) titleEl.textContent = nd.name || entry.id;
+  const subEl = document.getElementById('visDrawerSub');
+  if (subEl) subEl.textContent = [hw.cpu, entry.variant || entry.archetype].filter(Boolean).join(' · ') || 'Unknown chassis';
+
+  let html = '';
+
+  if (!online) {
+    html += `<div class="rounded-lg border border-rose-500/40 bg-rose-950/40 px-3 py-2 text-xs text-rose-300 flex items-center space-x-2">
+      <i data-lucide="unplug" class="w-3.5 h-3.5"></i><span>Node offline / unreachable over Tailscale mesh</span></div>`;
+  }
+
+  // --- live instrument gauges
+  const cpu = Number(t.cpu_pct) || 0;
+  const gpu = Number(t.gpu_busy_pct) || 0;
+  const temp = t.temperature_c !== undefined && t.temperature_c !== null ? Number(t.temperature_c) : null;
+  const power = t.power_w !== undefined && t.power_w !== null ? Number(t.power_w) : null;
+  html += `<div class="space-y-3 rounded-xl border border-slate-800 bg-dark-950/60 p-3">
+    <div class="flex items-center justify-between">
+      <h4 class="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center space-x-1">
+        <i data-lucide="gauge" class="w-3 h-3 text-cyan-400"></i><span>Live Hardware Gauges</span></h4>
+      <span class="text-[10px] font-mono text-slate-500">${online ? '1 Hz SSE' : 'stale'}</span>
+    </div>
+    <div>
+      <div class="flex items-center justify-between text-[11px] mb-1">
+        <span class="text-slate-400">CPU / APU Load</span>
+        <span class="font-mono text-slate-200">${cpu.toFixed(1)}%</span>
+      </div>${visLoadBar(cpu, visLoadPctClass(cpu))}
+    </div>
+    <div>
+      <div class="flex items-center justify-between text-[11px] mb-1">
+        <span class="text-slate-400">GPU / iGPU Busy</span>
+        <span class="font-mono text-slate-200">${gpu.toFixed(1)}%</span>
+      </div>${visLoadBar(gpu, visLoadPctClass(gpu))}
+    </div>
+    <div class="grid grid-cols-2 gap-2 pt-1">
+      <div class="rounded-lg bg-dark-900 border border-slate-800 px-2.5 py-1.5">
+        <div class="text-[10px] text-slate-500 uppercase tracking-wider">Temp</div>
+        <div class="text-sm font-mono ${temp !== null && temp > limit * 0.9 ? 'text-rose-400' : 'text-slate-200'}">
+          ${temp !== null ? temp.toFixed(1) + ' °C' : '–'}
+          <span class="text-[10px] text-slate-600">/ ${limit}°C</span></div>
+      </div>
+      <div class="rounded-lg bg-dark-900 border border-slate-800 px-2.5 py-1.5">
+        <div class="text-[10px] text-slate-500 uppercase tracking-wider">Power</div>
+        <div class="text-sm font-mono text-slate-200">${power !== null ? power.toFixed(1) + ' W' : '–'}</div>
+      </div>
+    </div>
+  </div>`;
+
+  // --- VRAM / RAM allocation bar
+  const vTotal = Number(t.vram_total_gb) || Number(hw.vram_gb) || 0;
+  const vUsed = Number(t.vram_used_gb) || 0;
+  if (vTotal > 0) {
+    const vPct = (vUsed / vTotal) * 100;
+    html += `<div class="rounded-xl border border-slate-800 bg-dark-950/60 p-3 space-y-2">
+      <div class="flex items-center justify-between text-[11px]">
+        <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center space-x-1">
+          <i data-lucide="database" class="w-3 h-3 text-indigo-400"></i><span>VRAM Allocation</span></span>
+        <span class="font-mono text-cyan-300">${vUsed.toFixed(1)} / ${vTotal.toFixed(0)} GB</span>
+      </div>${visLoadBar(vPct, visVramPctClass(vPct))}
+    </div>`;
+  }
+  const rTotal = Number(t.ram_total_gb) || Number(hw.ram_gb) || 0;
+  const rUsed = Number(t.ram_used_gb) || 0;
+  if (rTotal > 0) {
+    html += `<div class="rounded-xl border border-slate-800 bg-dark-950/60 p-3 space-y-2">
+      <div class="flex items-center justify-between text-[11px]">
+        <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center space-x-1">
+          <i data-lucide="memory-stick" class="w-3 h-3 text-slate-400"></i><span>System RAM</span></span>
+        <span class="font-mono text-slate-300">${rUsed.toFixed(1)} / ${rTotal.toFixed(0)} GB</span>
+      </div>${visLoadBar((rUsed / rTotal) * 100, visLoadPctClass((rUsed / rTotal) * 100))}
+    </div>`;
+  }
+
+  // --- 12-slot inference matrix
+  const inf = t.inference || null;
+  if (inf || hw.inference_slots) {
+    const slotsTotal = Math.max(Number((inf && inf.slots_total) || hw.inference_slots) || 12, 1);
+    const rawSlots = (inf && Array.isArray(inf.slots)) ? inf.slots : [];
+    const slots = [];
+    for (let i = 0; i < slotsTotal; i++) {
+      slots.push(rawSlots[i] || { slot_id: i, status: 'idle', tok_per_sec: 0 });
+    }
+    const activeSlots = online ? slots.filter(s => (s.status || 'idle').toLowerCase() !== 'idle') : [];
+    const cells = slots.slice(0, 12).map(s => {
+      const st = online ? String(s.status || 'idle').toLowerCase() : 'idle';
+      const style = VIS_SLOT_STYLES[st] || VIS_SLOT_STYLES.idle;
+      const label = { prefill: 'PP', decoding: 'TG', exclusive: 'EX', idle: '–' }[st] || '?';
+      const tip = `Slot ${s.slot_id} · ${st}` +
+        (s.persona ? ` · ${s.persona}` : '') +
+        (s.model ? ` · ${s.model}` : '') +
+        (s.tok_per_sec ? ` · ${Number(s.tok_per_sec).toFixed(1)} tok/s` : '');
+      return `<div title="${escapeHtml(tip)}" class="rounded-md border ${style} h-9 flex flex-col items-center justify-center leading-none">
+        <span class="text-[9px] opacity-70">${s.slot_id}</span>
+        <span class="text-[10px] font-bold font-mono">${label}</span></div>`;
+    }).join('');
+    html += `<div class="rounded-xl border border-slate-800 bg-dark-950/60 p-3 space-y-2.5">
+      <div class="flex items-center justify-between">
+        <h4 class="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center space-x-1">
+          <i data-lucide="cpu" class="w-3 h-3 text-amber-400"></i><span>Inference Slots</span></h4>
+        <span class="text-[10px] font-mono text-emerald-300">
+          ${activeSlots.length} active / ${Math.min(slotsTotal, 12)}
+          ${inf && inf.instant_tok_per_sec ? ' · ' + Number(inf.instant_tok_per_sec).toFixed(1) + ' tok/s' : ''}
+        </span>
+      </div>
+      ${inf && inf.resident_model ? `<div class="text-[11px] text-slate-300 truncate" title="${escapeHtml(inf.resident_model)}">
+        <i data-lucide="package" class="w-3 h-3 inline text-brand-400 mr-1"></i>${escapeHtml(inf.resident_model)}</div>` : ''}
+      <div class="grid grid-cols-6 gap-1.5">${cells}</div>
+      ${activeSlots.length ? `<div class="space-y-1 pt-1 border-t border-slate-800/70">${activeSlots.slice(0, 12).map(s => {
+        const st = String(s.status || 'idle').toLowerCase();
+        const dot = st === 'prefill' ? 'bg-amber-400' : st === 'exclusive' ? 'bg-purple-400' : 'bg-emerald-400';
+        const who = s.persona || s.model || `slot ${s.slot_id}`;
+        return `<div class="flex items-center justify-between text-[11px]">
+          <span class="flex items-center space-x-1.5 text-slate-300 truncate">
+            <span class="w-1.5 h-1.5 rounded-full ${dot} inline-block flex-shrink-0"></span>
+            <span class="truncate font-mono">${escapeHtml(String(who))}</span></span>
+          <span class="font-mono text-slate-400 flex-shrink-0">${Number(s.tok_per_sec || 0).toFixed(1)} tok/s</span></div>`;
+      }).join('')}</div>` : ''}
+    </div>`;
+  }
+
+  // --- docked services with status pills
+  const services = nd.services || [];
+  if (services.length) {
+    html += `<div class="rounded-xl border border-slate-800 bg-dark-950/60 p-3 space-y-2">
+      <h4 class="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center space-x-1">
+        <i data-lucide="boxes" class="w-3 h-3 text-brand-400"></i>
+        <span>Docked Services (${services.length})</span></h4>
+      <div class="space-y-1.5">${services.map(s => {
+        const status = online ? String(s.status || 'active').toLowerCase() : 'offline';
+        const pill = VIS_SERVICE_STATUS_PILLS[status] || VIS_SERVICE_STATUS_PILLS.active;
+        const iconName = s.icon || 'circle';
+        return `<div class="flex items-center justify-between rounded-lg bg-dark-900/70 border border-slate-800/60 px-2.5 py-1.5">
+          <span class="flex items-center space-x-2 text-[11px] text-slate-300 truncate min-w-0">
+            <i data-lucide="${escapeHtml(iconName)}" class="w-3.5 h-3.5 text-slate-500 flex-shrink-0"></i>
+            <span class="truncate">${escapeHtml(s.name || s.id)}</span>
+            ${s.port ? `<span class="text-[10px] font-mono text-slate-600 flex-shrink-0">:${s.port}</span>` : ''}
+          </span>
+          <span class="px-1.5 py-0.5 rounded-full text-[9px] font-semibold uppercase tracking-wide ${pill} flex-shrink-0">${escapeHtml(status)}</span>
+        </div>`;
+      }).join('')}</div>
+    </div>`;
+  }
+
+  body.innerHTML = html;
+  if (window.lucide) lucide.createIcons();
+}
+
+// --- SSE telemetry feed (GET /api/visualizer/stream, SPEC-HK-009 §6.2) ------
+
+function visConnectStream() {
+  if (visEventSource) return;
+  try {
+    visEventSource = new EventSource('/api/visualizer/stream');
+    visEventSource.onmessage = (e) => {
+      let data = null;
+      try { data = JSON.parse(e.data); } catch (err) { return; }
+      if (!data || typeof data !== 'object') return;
+      // Feed the living-silicon scene (60 Hz tween interpolation inside).
+      if (visScene) visScene.updateTelemetry(data);
+      if (data.nodes) Object.assign(visNodeTelemetry, data.nodes);
+      visUpdateHud(data);
+      if (visSelectedNodeId) visRenderDrawerBody();
+    };
+    visEventSource.onerror = () => { /* EventSource auto-reconnects */ };
+  } catch (err) {
+    console.warn('[HomelabVisualizer] SSE stream unavailable:', err && err.message);
+  }
+}
+
+function visUpdateHud(frame) {
+  const nodesEl = document.getElementById('visStatusNodeCount');
+  if (nodesEl && visTopology) {
+    const total = (visTopology.nodes || []).length;
+    if (!frame || !frame.nodes) {
+      nodesEl.textContent = `${total} Nodes`;
+    } else {
+      const ids = Object.keys(frame.nodes);
+      const online = ids.filter(id => frame.nodes[id] && frame.nodes[id].online !== false).length;
+      nodesEl.textContent = `${online}/${total || ids.length} Nodes`;
+    }
+  }
+
+  const vramEl = document.getElementById('visStatusVram');
+  if (vramEl) {
+    let used = 0, total = 0;
+    const nodes = (frame && frame.nodes) || visNodeTelemetry;
+    Object.keys(nodes).forEach(id => {
+      const d = nodes[id] || {};
+      total += Number(d.vram_total_gb) || 0;
+      if (d.online !== false) used += Number(d.vram_used_gb) || 0;
+    });
+    if (total === 0 && visTopology) {
+      // Pre-telemetry fallback: hardware capacity from the topology contract.
+      (visTopology.nodes || []).forEach(n => { total += Number((n.hardware || {}).vram_gb) || 0; });
+    }
+    vramEl.textContent = total > 0 ? `${used.toFixed(1)} / ${total.toFixed(0)} GB` : '– / – GB';
+  }
+
+  const toksEl = document.getElementById('visStatusToks');
+  if (toksEl) {
+    let toks = 0;
+    const nodes = (frame && frame.nodes) || {};
+    Object.keys(nodes).forEach(id => {
+      const inf = (nodes[id] || {}).inference;
+      if (inf) toks += Number(inf.instant_tok_per_sec) || 0;
+    });
+    toksEl.textContent = `${toks.toFixed(1)} tok/s`;
+  }
+}
+
+// --- Render loop & resize orchestration --------------------------------------
+// Own rAF loop (instead of the scene's built-in one) so OrbitControls damping
+// and camera tweens get per-frame updates, and heavy rendering pauses when
+// the tab is hidden.
+
+function visRunRenderLoop() {
+  if (visRenderLoopOn || !visScene) return;
+  visRenderLoopOn = true;
+  const clock = new window.THREE.Clock();
+  clock.getDelta();
+  visFpsWindowStart = Date.now();
+
+  const loop = () => {
+    if (!visRenderLoopOn || !visScene) return;
+    const dt = clock.getDelta();
+    const visible = currentTab === 'visualizer' && !document.hidden;
+    if (visible) {
+      if (visCameraTween) visStepCameraTween(dt);
+      visScene.step(dt);
+      if (visControls) visControls.update();
+      visScene.render();
+      if (visScene.renderer) visFpsFrames++;
+      const elapsed = Date.now() - visFpsWindowStart;
+      if (elapsed >= 1000) {
+        const fps = Math.round((visFpsFrames * 1000) / elapsed);
+        const el = document.getElementById('visFpsReadout');
+        if (el) el.textContent = `${fps} FPS`;
+        visFpsFrames = 0;
+        visFpsWindowStart = Date.now();
+      }
+    }
+    requestAnimationFrame(loop);
+  };
+  requestAnimationFrame(loop);
+}
+
+window.addEventListener('resize', () => {
+  if (visScene && currentTab === 'visualizer') visScene.resize();
+});
+
+// ----------------------------------------------------
 // Explicit window bindings for inline HTML handlers
+// ----------------------------------------------------
+window.visSetCameraPreset = visSetCameraPreset;
+window.visResetCamera = visResetCamera;
+window.visToggleAutoRotate = visToggleAutoRotate;
+window.visSetLayout = visSetLayout;
+window.visSetSpeed = visSetSpeed;
+window.visCloseDrawer = visCloseDrawer;
+window.loadVisualizer = loadVisualizer;
 window.switchTab = switchTab;
 window.setAnalyticsTimeRange = setAnalyticsTimeRange;
 window.loadPantheon = loadPantheon;

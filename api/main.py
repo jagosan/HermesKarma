@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from api.routes import sessions, analytics, skills, memory, live, tickets, cron, nodes, pantheon
+from api.routes import sessions, analytics, skills, memory, live, tickets, cron, nodes, pantheon, visualizer
 
 app = FastAPI(
     title="Hermes Karma",
@@ -43,6 +43,7 @@ app.include_router(live.router)
 app.include_router(tickets.router)
 app.include_router(cron.router)
 app.include_router(nodes.router)
+app.include_router(visualizer.router)
 
 # Mount static files
 static_dir = Path(__file__).resolve().parent / "static"

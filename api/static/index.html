@@ -10,6 +10,24 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- SPEC-HK-009 Phase 4 (TASK-HK-140): Three.js r160 UMD global build +
+       OrbitControls. r160's examples/js legacy script was removed upstream,
+       so OrbitControls ships ESM-only; we resolve it via an import map and a
+       tiny module shim that exposes window.OrbitControls for classic app.js. -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+  <script type="module">
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+    window.OrbitControls = OrbitControls;
+    window.dispatchEvent(new Event("vis-orbit-ready"));
+  </script>
   <script>
     tailwind.config = {
       darkMode: 'class',
@@ -128,6 +146,12 @@
           <span>Fleet & APU Nodes</span>
         </button>
 
+        <!-- SPEC-HK-009 Phase 4: Homelab 3D Spatial Visualizer tab -->
+        <button onclick="switchTab('visualizer')" id="tab-visualizer" class="tab-btn w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/50">
+          <i data-lucide="box" class="w-4 h-4"></i>
+          <span>Homelab 3D</span>
+        </button>
+
         <button onclick="switchTab('tickets')" id="tab-tickets" class="tab-btn w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/50">
           <i data-lucide="ticket" class="w-4 h-4"></i>
           <span>Tickets & Webhooks</span>
@@ -157,7 +181,7 @@
     </aside>
 
     <!-- Main View Content -->
-    <main class="flex-1 overflow-y-auto p-6 pb-24 md:pb-6 relative">
+    <main id="contentMain" class="flex-1 overflow-y-auto p-6 pb-24 md:pb-6 relative">
       
       <!-- TAB: SESSIONS -->
       <section id="view-sessions" class="view-panel space-y-6">
@@ -1063,6 +1087,85 @@
       </section>
 
     </main>
+
+    <!-- ================================================================
+         TAB: HOMELAB 3D SPATIAL VISUALIZER (SPEC-HK-009 §7.1, TASK-HK-140)
+         Full-bleed WebGL viewport with floating glass HUD, camera
+         bookmarks, Spatial/Topology layout switch, sliding node inspector
+         drawer, and bottom conduit flow controls.
+         ================================================================ -->
+    <main id="view-visualizer" class="view-panel hidden flex-1 relative overflow-hidden h-[calc(100dvh-114px)] md:h-[calc(100dvh-70px)] flex flex-col bg-dark-950">
+      <!-- Three.js WebGL canvas mount point (HomelabVisualizerScene injects its canvas here) -->
+      <div id="visCanvasContainer" class="absolute inset-0 z-0 select-none"></div>
+
+      <!-- Top Floating Glass HUD -->
+      <div id="visHudTop" class="absolute top-4 left-4 right-4 z-20 flex flex-wrap items-start justify-between gap-3 pointer-events-none">
+        <div class="flex flex-wrap items-center gap-3 pointer-events-auto">
+          <div class="px-4 py-2 rounded-xl bg-dark-900/80 backdrop-blur-md border border-slate-700/60 shadow-2xl flex items-center space-x-3">
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span class="text-xs font-semibold text-slate-200">Homelab Spatial Mesh</span>
+            <span class="text-xs text-slate-400 font-mono" id="visStatusNodeCount">– Nodes</span>
+          </div>
+          <div class="px-3 py-2 rounded-xl bg-dark-900/80 backdrop-blur-md border border-slate-700/60 flex items-center space-x-2">
+            <span class="text-xs text-slate-400">Total VRAM:</span>
+            <span class="text-xs font-mono font-bold text-cyan-400" id="visStatusVram">– / – GB</span>
+          </div>
+          <div class="px-3 py-2 rounded-xl bg-dark-900/80 backdrop-blur-md border border-slate-700/60 flex items-center space-x-2">
+            <span class="text-xs text-slate-400">Inference:</span>
+            <span class="text-xs font-mono font-bold text-emerald-400" id="visStatusToks">0.0 tok/s</span>
+          </div>
+        </div>
+
+        <!-- Camera Bookmarks & View Mode Toggles -->
+        <div class="flex flex-wrap items-center gap-2 pointer-events-auto">
+          <div class="flex items-center bg-dark-900/80 backdrop-blur rounded-lg border border-slate-700/60 p-0.5">
+            <button onclick="visSetCameraPreset('isometric')" id="visBtnCamIso" class="vis-preset-btn px-2.5 py-1 text-[11px] font-semibold rounded bg-brand-600 text-white" title="Isometric hero view">Isometric</button>
+            <button onclick="visSetCameraPreset('top')" id="visBtnCamTop" class="vis-preset-btn px-2.5 py-1 text-[11px] font-semibold rounded text-slate-400 hover:text-slate-200" title="Top / plan view">Top/Plan</button>
+            <button onclick="visSetCameraPreset('edge')" id="visBtnCamEdge" class="vis-preset-btn px-2.5 py-1 text-[11px] font-semibold rounded text-slate-400 hover:text-slate-200" title="Edge-level rail view">Edge</button>
+            <button onclick="visResetCamera()" id="visBtnCamReset" class="px-2 py-1 rounded text-slate-400 hover:text-white" title="Reset camera (deselect)">
+              <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i>
+            </button>
+          </div>
+          <button onclick="visToggleAutoRotate()" id="btnVisAutoRotate" class="p-2 rounded-lg bg-dark-900/80 backdrop-blur border border-slate-700/60 text-slate-300 hover:text-white" title="Toggle orbit auto-rotate">
+            <i data-lucide="orbit" class="w-4 h-4"></i>
+          </button>
+          <div class="flex bg-dark-900/80 backdrop-blur rounded-lg border border-slate-700/60 p-0.5">
+            <button onclick="visSetLayout('spatial')" id="visBtnSpatial" class="px-3 py-1 text-xs font-semibold rounded bg-brand-600 text-white">Spatial</button>
+            <button onclick="visSetLayout('topology')" id="visBtnTopology" class="px-3 py-1 text-xs font-semibold rounded text-slate-400 hover:text-slate-200">Topology</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Sliding Telemetry & Service Inspector Drawer -->
+      <div id="visInspectorDrawer" class="absolute top-4 bottom-4 right-4 w-[92vw] sm:w-96 rounded-2xl bg-dark-900/90 backdrop-blur-xl border border-slate-700/70 shadow-2xl z-30 transform translate-x-[110%] transition-transform duration-300 ease-out flex flex-col p-5 overflow-hidden">
+        <!-- Header with close button -->
+        <div class="flex items-center justify-between pb-4 border-b border-slate-800">
+          <div class="flex items-center space-x-3">
+            <div id="visDrawerIcon" class="w-8 h-8 rounded-lg bg-brand-500/20 text-brand-400 flex items-center justify-center">
+              <i data-lucide="server" class="w-4 h-4"></i>
+            </div>
+            <div>
+              <h3 id="visDrawerTitle" class="font-bold text-sm text-white">Node Name</h3>
+              <p id="visDrawerSub" class="text-xs text-slate-400 font-mono">Hardware Model</p>
+            </div>
+          </div>
+          <button onclick="visCloseDrawer()" class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800" aria-label="Close inspector">
+            <i data-lucide="x" class="w-4 h-4"></i>
+          </button>
+        </div>
+
+        <!-- Drawer Content Scrollable Area (live gauges, VRAM, temp, 12-slot matrix, services) -->
+        <div id="visDrawerBody" class="flex-1 overflow-y-auto space-y-4 pt-4 pr-1"></div>
+      </div>
+
+      <!-- Bottom Conduit Flow Controls -->
+      <div class="absolute bottom-4 left-4 z-20 pointer-events-auto flex items-center space-x-3 bg-dark-900/80 backdrop-blur-md px-4 py-2 rounded-xl border border-slate-700/60 shadow-lg">
+        <span class="text-xs text-slate-400">Particle Speed:</span>
+        <input type="range" min="0.2" max="3.0" step="0.1" value="1.0" oninput="visSetSpeed(this.value)" class="w-24 accent-brand-500" />
+        <div class="h-4 w-[1px] bg-slate-700"></div>
+        <span class="text-xs text-slate-400 font-mono" id="visFpsReadout">– FPS</span>
+      </div>
+    </main>
   </div>
 
   <!-- SESSION TIMELINE MODAL / DRAWER -->
@@ -1156,7 +1259,9 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=2.3.0"></script>
+  <!-- SPEC-HK-009 Phase 3 engine (UMD: window.HomelabVisualizerScene) + app logic -->
+  <script src="/static/visualizer_scene.js?v=1.1.0"></script>
+  <script src="/static/app.js?v=2.4.0"></script>
     <!-- Mobile drawer overlay (tap to close) -->
     <div id="mobile-drawer-overlay" onclick="closeMobileMenu()" class="fixed inset-0 bg-black/60 z-40 hidden md:hidden" aria-hidden="true"></div>
 
@@ -1193,6 +1298,10 @@
       <button onclick="switchTab('nodes'); closeMobileMenu()" id="tab-nodes-m" class="mobile-tab-btn flex flex-col items-center justify-center gap-0.5 px-1 py-2 text-[10px] font-medium text-slate-400">
         <i data-lucide="server" class="w-4 h-4"></i>
         <span>Nodes</span>
+      </button>
+      <button onclick="switchTab('visualizer'); closeMobileMenu()" id="tab-visualizer-m" class="mobile-tab-btn flex flex-col items-center justify-center gap-0.5 px-1 py-2 text-[10px] font-medium text-slate-400">
+        <i data-lucide="box" class="w-4 h-4"></i>
+        <span>3D</span>
       </button>
       <button onclick="switchTab('tickets'); closeMobileMenu()" id="tab-tickets-m" class="mobile-tab-btn flex flex-col items-center justify-center gap-0.5 px-1 py-2 text-[10px] font-medium text-slate-400">
         <i data-lucide="ticket" class="w-4 h-4"></i>
