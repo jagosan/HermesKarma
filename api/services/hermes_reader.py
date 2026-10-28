@@ -459,7 +459,7 @@ class HermesReader:
     ) -> Dict[str, Any]:
         import time
         if date_from is None and not search and not source and not persona:
-            date_from = time.time() - (30 * 86400)
+            date_from = time.time() - (7 * 86400)
 
         all_candidates = []
         seen_ids = set()
@@ -884,7 +884,7 @@ class HermesReader:
                 delegations.append(d)
             return delegations
 
-    def get_analytics_overview(self, time_range: str = "30d") -> Dict[str, Any]:
+    def get_analytics_overview(self, time_range: str = "7d") -> Dict[str, Any]:
         """Aggregate total tokens, costs, models, and tools with full multi-model and local vs cloud precision across all state databases."""
         import time
         from collections import defaultdict
@@ -1357,8 +1357,15 @@ class HermesReader:
                 dt = start_dt + datetime.timedelta(days=i)
                 temporal_buckets.append(dt.strftime("%Y-%m-%d"))
                 temporal_labels.append(dt.strftime("%b %d"))
-        else:
+        elif time_range in ("30d", "30days"):
             days = 30
+            start_dt = now_dt - datetime.timedelta(days=days)
+            for i in range(days + 1):
+                dt = start_dt + datetime.timedelta(days=i)
+                temporal_buckets.append(dt.strftime("%Y-%m-%d"))
+                temporal_labels.append(dt.strftime("%b %d"))
+        else:
+            days = 7
             start_dt = now_dt - datetime.timedelta(days=days)
             for i in range(days + 1):
                 dt = start_dt + datetime.timedelta(days=i)
@@ -2014,11 +2021,11 @@ class HermesReader:
                 pass
         return round(_DEFAULT_INPUT_USD_PER_MILLION * tokens / 1_000_000.0, 6)
 
-    def get_context_tax_analytics(self, days: int = 30) -> Dict[str, Any]:
+    def get_context_tax_analytics(self, days: int = 7) -> Dict[str, Any]:
         """SPEC-HK-007: aggregate 4-tier Context Tax, Spatial Navigation ROI,
         compaction/amnesia stats, Top Thrash Files and ingress attribution over
         a rolling window. Per-session audits ride the incremental mtime cache."""
-        days = max(1, int(days or 30))
+        days = max(1, int(days or 7))
         cutoff_ts = time.time() - days * 86400
 
         breakdown = {

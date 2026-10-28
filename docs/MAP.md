@@ -40,7 +40,7 @@
   - `GET /api/pantheon/profiles`: List all 10 swarm agents + aggregated metrics
   - `GET /api/pantheon/profiles/{profile_id}`: Full persona detail + historical sessions
 - `sessions.py`:
-  - `GET /api/sessions`: List sessions (supports `source=subagent`, `persona=<id>`, default 30d window)
+  - `GET /api/sessions`: List sessions (supports `source=subagent`, `persona=<id>`, default 7d window)
   - `GET /api/sessions/{session_id}`: Single session details & subagents & context_audit
 - `live.py`:
   - `GET /api/live-sessions`: Active sessions snapshot
@@ -64,7 +64,7 @@
 - `#visInspectorDrawer`: Sliding frosted-glass telemetry & service inspection drawer
 - `visualizer_scene.js`: Three.js procedural chassis generator, Bezier conduit flow particle system & camera orbit director
 - `#tab-pantheon`, `#view-pantheon`: Pantheon Swarm multi-agent grid & detail drawer
-- `#tab-sessions`, `#view-sessions`: Sessions list, subagent badges, filter dropdowns, 30d default range selector
+- `#tab-sessions`, `#view-sessions`: Sessions list, subagent badges, filter dropdowns, 7d default range selector
 - `.session-badge-ingress`, `.session-badge-thrash`: Badges for ingress channel and thrash warning
 - `#tab-live`, `#view-live`: Live running sessions & subagent cards
 - `#tab-analytics`, `#view-analytics`: Cost & token distribution charts, Context Tax, Spatial ROI

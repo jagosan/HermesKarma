@@ -6,13 +6,13 @@ router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
 
 
 @router.get("/overview")
-def get_analytics_overview(time_range: str = "30d"):
+def get_analytics_overview(time_range: str = "7d"):
     """Retrieve high-level token metrics, costs, cache hit rate, and tool/model distribution."""
     return hermes_reader.get_analytics_overview(time_range=time_range)
 
 
 @router.get("/context-tax")
-def get_context_tax(days: int = Query(30, ge=1, le=365)):
+def get_context_tax(days: int = Query(7, ge=1, le=365)):
     """SPEC-HK-007: 4-tier Context Tax, Spatial Navigation ROI, compaction
     & amnesia stats, Top Thrash Files, and ingress gateway attribution over a
     rolling window (default 30 days)."""

@@ -403,7 +403,7 @@ class MetadataService:
             cur.execute("DELETE FROM node_gpu_samples WHERE timestamp < ?", (prune_cutoff,))
             conn.commit()
 
-    def get_gpu_history(self, time_range: str = "30d", node_id: Optional[str] = None) -> Dict[str, Any]:
+    def get_gpu_history(self, time_range: str = "7d", node_id: Optional[str] = None) -> Dict[str, Any]:
         """Retrieve GPU telemetry timeseries for fleet nodes over a specific time range."""
         now_ts = time.time()
         
@@ -411,12 +411,12 @@ class MetadataService:
             cutoff_ts = now_ts - 86400
             bucket_interval_sec = 3600
             bucket_format = "%Y-%m-%d %H:00"
-        elif time_range in ("7d", "7days", "week"):
-            cutoff_ts = now_ts - (7 * 86400)
+        elif time_range in ("30d", "30days", "month", "all"):
+            cutoff_ts = now_ts - (30 * 86400)
             bucket_interval_sec = 86400
             bucket_format = "%Y-%m-%d"
-        else: # 30d, month, all
-            cutoff_ts = now_ts - (30 * 86400)
+        else: # 7d, default
+            cutoff_ts = now_ts - (7 * 86400)
             bucket_interval_sec = 86400
             bucket_format = "%Y-%m-%d"
 

@@ -250,7 +250,7 @@ function switchTab(tabId) {
 // SESSIONS VIEW
 // ----------------------------------------------------
 let searchTimeout = null;
-let currentSessionsTimeRange = '30d';
+let currentSessionsTimeRange = '7d';
 
 function setSessionsTimeRange(range) {
   currentSessionsTimeRange = range;
@@ -709,7 +709,7 @@ async function triggerFocusActive() {
 // ----------------------------------------------------
 // ANALYTICS VIEW
 // ----------------------------------------------------
-let currentAnalyticsRange = '30d';
+let currentAnalyticsRange = '7d';
 let currentTemporalMetric = 'input_tokens'; // SPEC-HK-006
 
 async function setTemporalMetric(metric) {
@@ -833,8 +833,8 @@ function analyticsRangeToDays(range) {
     case '7d': return 7;
     case 'month': return 30;
     case 'all': return 365;
-    case '30d':
-    default: return 30;
+    case '30d': return 30;
+    default: return 7;
   }
 }
 
@@ -1817,7 +1817,7 @@ function updateFleetStatusIndicators(nodes) {
 // FLEET & NODES TELEMETRY VIEW (BTOP & AMDGPU_TOP DASHBOARD)
 // ----------------------------------------------------
 let fleetGpuHistoryChartInstance = null;
-let currentFleetGpuTimeRange = '30d';
+let currentFleetGpuTimeRange = '7d';
 
 async function setFleetGpuTimeRange(range) {
   currentFleetGpuTimeRange = range;

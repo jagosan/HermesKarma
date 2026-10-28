@@ -39,7 +39,7 @@ async def get_nodes(force_refresh: bool = Query(False, description="Bypass cache
 
 
 @router.get("/history")
-async def get_nodes_history(time_range: str = Query("30d", description="Time window (24h, 7d, 30d)"), node_id: Optional[str] = None):
+async def get_nodes_history(time_range: str = Query("7d", description="Time window (24h, 7d, 30d)"), node_id: Optional[str] = None):
     """Retrieve historical GPU telemetry for fleet nodes (SPEC-HK-006)."""
     from api.services.metadata_service import metadata_service
     return metadata_service.get_gpu_history(time_range=time_range, node_id=node_id)

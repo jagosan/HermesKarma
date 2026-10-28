@@ -1058,8 +1058,21 @@ class TestHermesKarma(unittest.TestCase):
         self.assertIn("timestamp", b_sample)
         self.assertIn("gpu_busy_percent", b_sample)
 
+        # Verify default is 7d
+        res_default = self.client.get("/api/nodes/history")
+        self.assertEqual(res_default.status_code, 200)
+        self.assertEqual(res_default.json()["time_range"], "7d")
+
     def test_analytics_temporal_usage(self):
         """SPEC-HK-006: Verify temporal_usage structure in analytics overview."""
+        # Verify default is 7d
+        res_default = self.client.get("/api/analytics/overview")
+        self.assertEqual(res_default.status_code, 200)
+        def_data = res_default.json()
+        self.assertEqual(def_data.get("time_range"), "7d")
+        self.assertEqual(def_data["temporal_usage"]["time_range"], "7d")
+        self.assertEqual(len(def_data["temporal_usage"]["buckets"]), 8)
+
         res = self.client.get("/api/analytics/overview?time_range=30d")
         self.assertEqual(res.status_code, 200)
         data = res.json()
@@ -1103,6 +1116,10 @@ class TestHermesKarma(unittest.TestCase):
 
     def test_api_analytics_context_tax(self):
         """GET /api/analytics/context-tax matches the blueprint schema."""
+        res_default = self.client.get("/api/analytics/context-tax")
+        self.assertEqual(res_default.status_code, 200)
+        self.assertEqual(res_default.json()["window_days"], 7)
+
         res = self.client.get("/api/analytics/context-tax?days=30")
         self.assertEqual(res.status_code, 200)
         data = res.json()
