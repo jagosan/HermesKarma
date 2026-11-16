@@ -10,9 +10,11 @@
   - `specs/07-context-tax-spatial-navigation-roi-harness-telemetry.md`: SPEC-HK-007: Context Tax (4 tiers), Spatial Navigation ROI (MAP.md/graphify), Compaction Amnesia, Dead Skills audit & Ingress attribution.
   - `specs/08-declarative-fleet-config-and-portable-deployment.md`: SPEC-HK-008: Declarative Fleet Configuration (fleet.yaml/JSON), Universal Hardware Drivers (AMD/NVIDIA/Apple), 12-Factor Portability, Bootstrap CLI (karma init) & Cloud-Native K8s Deployment.
   - `specs/09-homelab-3d-cluster-visualizer.md`: SPEC-HK-009: Homelab 3D Spatial Visualizer (Interactive Hardware Topology, Translucent Cyber-Chassis & Real-Time Flow Conduits).
+  - `specs/10-christopher-robin-overseer-spec-queue-ui.md`: SPEC-HK-010: Christopher Robin Overseer & Dynamic Spec Queue Control Plane (Macro-Goals Matrix, Needs-Input / Stalled Banners, Interactive Spec Queue Kanban & Operator Actions).
 
 - `docs/architecture/`:
   - `docs/architecture/09-homelab-3d-cluster-visualizer.md`: System topology, Three.js scene graph, spatial coordinates, procedural chassis, dynamic Bezier conduits, and SSE streaming pipeline.
+  - `docs/architecture/10-christopher-robin-overseer-spec-queue-ui.md`: Overseer system topology, sequence diagram, state reconciliation, attention heuristic matrix, and operator action dispatch.
 
 ## Backend Services (`api/services/`)
 - `hermes_reader.py`: `HermesReader`
@@ -34,8 +36,15 @@
   - `stream_live_events(interval)` -> AsyncGenerator (SSE emitter for live sessions & fleet)
 - `node_collector.py`: `NodeTelemetryCollector` (Sysfs/APU & Prometheus node_exporter telemetry for Chunkito/Beehive, records GPU timeseries)
 - `metadata_service.py`: `MetadataService` (Tags, notes, ticket sync SQLite storage, node_gpu_samples timeseries persistence)
+- `overseer_service.py`: `OverseerService` (Parses Kanban-Spec-Queue.md, goals/GOAL-*.md, cr_runner_state.json, evaluates Needs-Input & Stalled heuristics, handles operator action dispatch & log tailing)
 
 ## REST API Routes (`api/routes/`)
+- `overseer.py`:
+  - `GET /api/overseer/overview`: Full macro-goals matrix, spec queue breakdown, runner heartbeat & attention items
+  - `GET /api/overseer/spec/{spec_id}`: Deep inspection of spec, child tasks & git commit/branch
+  - `GET /api/overseer/logs`: Recent log tail from cr_runner.log & cr_governor.log
+  - `POST /api/overseer/action`: Operator controls (pause_runner, resume_runner, expedite_spec, archive_spec, step_phase)
+  - `GET /api/overseer/stream`: SSE real-time delta updates
 - `pantheon.py`:
   - `GET /api/pantheon/profiles`: List all 10 swarm agents + aggregated metrics
   - `GET /api/pantheon/profiles/{profile_id}`: Full persona detail + historical sessions
@@ -59,6 +68,12 @@
   - `GET /api/visualizer/stream`: Real-time SSE telemetry delta stream (1Hz push with client-side 60Hz interpolation)
 
 ## Frontend DOM Elements & Components (`api/static/index.html` & `app.js`)
+- `#tab-overseer`, `#view-overseer`: Christopher Robin Overseer & Dynamic Spec Queue Control Plane
+- `#overseerAttentionBanner`: Dynamic Amber (Needs-Input) & Crimson (Stalled) Alert Ribbons
+- `#overseerRunnerHUD`: Autonomous Runner HUD (Status pill, resident engine, spend counter, quick actions)
+- `#overseerGoalsGrid`: Macro-Goals Roadmaps & Progress Matrix
+- `#overseerKanbanBoard`: Central Spec Queue 6-column dynamic board (Backlog, Queued, Expedited, Running, Paused, Review)
+- `#overseerDrawer`: Sliding inspector for spec details, Kanban subtasks & live log terminal
 - `#tab-visualizer`, `#view-visualizer`: Homelab 3D Spatial Visualizer interactive WebGL canvas view
 - `#homelabVisualizerCanvas`: Mount point for Three.js WebGL scene
 - `#visInspectorDrawer`: Sliding frosted-glass telemetry & service inspection drawer
