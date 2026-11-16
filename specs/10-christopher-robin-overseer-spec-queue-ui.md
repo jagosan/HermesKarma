@@ -327,10 +327,50 @@ The Overseer Attention Engine evaluates state across four dimensions:
     - Card click opens sliding detail drawer.
 
 #### 5. Spec & Log Sliding Drawer (`#overseerDrawer`)
-- Slides in from the right when any card or "View Logs" is clicked:
+- Slides in from the right on desktop, or slides up as a bottom sheet on mobile:
   - Spec description, architecture link, and definition of done
   - Granular checklist of phase subtasks from `Kanban-<Project>.md`
   - Real-time scrollable log window with syntax-highlighted runner output
+
+### 5.3 Mobile-First UX Architecture & Touch Interaction Directives (`< 768px`)
+
+Because homelab operators frequently inspect swarm progress remotely from mobile devices (e.g., Pixel 9 Pro or iPhone in transit via Tailscale), the Overseer UI must provide a **first-class mobile cockpit experience**, strictly avoiding desktop Kanban horizontal scroll fatigue:
+
+#### 1. Thumb-Driven Attention Hero Cards
+- **Instant Triage at Page Top:** Needs-Input (amber) and Stalled (crimson) cards render at the very top of the mobile viewport with full-width touch buttons.
+- **Single-Tap Actions ($\ge 48\text{px}$ Height):** 
+  - `[✅ Approve & Archive SPEC-PLAY-038]` button occupies a prominent primary touch strip.
+  - `[▶️ Resume Runner]` button provides immediate recovery from pause/stall locks without needing terminal access.
+  - `[🔗 Open Test Build]` link opens local or Cloudflare-tunneled playtest endpoints in a new browser tab.
+
+#### 2. Mobile Spec Queue: Segmented Column Pill Carousel
+- **No Desktop Multi-Column Horizontal Dragging:** A 6-column desktop Kanban board compressed onto a phone screen causes severe layout thrashing and horizontal scrolling friction.
+- **Segmented Horizontal Pill Switcher:**
+  - Sticky horizontal scrollable tab bar: `[ 🚧 Running (1) ]` `[ 🧪 Review (2) ]` `[ 🚨 Expedited (0) ]` `[ ⏳ Queued (7) ]` `[ 📥 Backlog (3) ]` `[ ✅ Done (17) ]`.
+  - Selecting a pill instantly filters and renders full-width vertical cards for that specific column.
+  - **Default Mobile Column Precedence:** If cards exist in `🚧 Running`, default to `Running`; otherwise if cards exist in `🧪 Review`, default to `Review`; otherwise default to `Queued`.
+- **Card Touch Card Layout:**
+  - Full-width touch cards with clear hierarchy: Spec ID pill, Title, Engine badge (`@tigger` / `@jagular`), priority tag (`#p0`), and active phase progress bar.
+  - Touch anywhere on the card body slides up the Full-Screen Bottom Sheet inspector.
+
+#### 3. Mobile Runner HUD
+- **Compact Sticky Strip:** Shows runner state dot (🟢/⏸️/⚠️), active spec ID, phase badge (`Phase 2/4`), and today's spend counter (`$0.00 / $10.00`).
+- **Touch Action Group:** High-contrast buttons with minimum $44 \times 44\,\text{px}$ hit areas:
+  - `Pause/Resume` toggle button with distinct iconography.
+  - `Logs` button triggering the bottom sheet terminal.
+
+#### 4. Full-Screen Bottom Sheet Inspector (`#overseerMobileSheet`)
+- On screens `< 768px`, the desktop sliding drawer morphs into a native-feeling bottom sheet:
+  - Rounded top corners (`rounded-t-2xl`) with a centered drag handle bar.
+  - Safe-area bottom padding: `pb-[env(safe-area-inset-bottom)]`.
+  - Header with sticky Close (`✕`) button and Spec ID.
+  - Scrollable subtask checklist with checkbox toggles.
+  - Integrated mobile terminal viewer with toggleable word-wrap (`break-all`), auto-scroll lock, and tap-to-copy log lines.
+
+#### 5. Mobile Navigation & Safe-Area Compliance
+- Integrated into the mobile drawer (`#mobile-drawer`) with a highlighted navigation row (`Overseer & Queue`).
+- Top navbar mobile hamburger menu badge indicates unresolved attention count: e.g. amber badge `(1)` if playtest waiting, crimson badge `(!)` if runner stalled.
+- All sticky bottom bars respect iOS/Android safe area insets: `pb-[env(safe-area-inset-bottom)]`.
 
 ---
 

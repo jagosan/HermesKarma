@@ -160,6 +160,19 @@ The attention engine evaluates system health deterministically every tick:
     └── .drawer-terminal (Real-time tail of cr_runner.log & cr_governor.log)
 ```
 
+### 4.2 Mobile-Responsive Component Layout (< 768px)
+
+On mobile viewports:
+1. **Layout Pivot:** `#overseerKanbanBoard` transforms from a 6-column grid (`grid-cols-6`) into a **segmented single-column vertical stack** controlled by `#overseerMobileColumnTabs`.
+2. **Segmented Tab Switcher:**
+   - Horizontally scrollable row with `-webkit-overflow-scrolling: touch` and `no-scrollbar`.
+   - Each tab renders column name and badge count: e.g. `Running (1)`, `Review (2)`.
+   - Selecting a tab animates the corresponding card list into view with zero horizontal document scrolling.
+3. **Bottom Sheet Morph:** `#overseerDrawer` applies conditional Tailwind classes:
+   - Mobile: `fixed inset-x-0 bottom-0 top-12 z-50 rounded-t-2xl bg-dark-900 border-t border-slate-700 pb-[env(safe-area-inset-bottom)]` with drag handle.
+   - Desktop: `fixed inset-y-0 right-0 w-full max-w-xl z-50 border-l border-slate-800`.
+4. **Touch Targets & Slop Margins:** All operational buttons enforce `min-h-[44px] min-w-[44px]` with `active:scale-95` haptic tactile feedback.
+
 ---
 
 ## 5. Security Guardrails & Atomic Mutating Operations
