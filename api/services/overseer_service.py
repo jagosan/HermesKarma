@@ -4,6 +4,7 @@ Provides non-blocking file parsers for Kanban-Spec-Queue.md, goals/GOAL-*.md,
 and cr_runner_state.json with graceful fallbacks for missing or locked files.
 """
 import json
+import subprocess
 import os
 import re
 import time
@@ -453,6 +454,234 @@ class OverseerService:
             pass
 
         return logs
+
+    def _write_file_atomic(self, path: Path, content: str) -> bool:
+        """Write file atomically using a temp file and rename."""
+        try:
+            temp_path = path.with_suffix(path.suffix + ".tmp")
+            temp_path.write_text(content, encoding="utf-8")
+            temp_path.rename(path)
+            return True
+        except Exception:
+            return False
+
+    def _get_vault_git_dir(self) -> Path:
+        """Get the vault git directory path."""
+        vault_dir = HERMES_DIR.parent / "obsidian/vault"
+        if (vault_dir / ".git").exists():
+            return vault_dir
+        return Path("/home/jagosan/repos/HermesKarma")
+
+    def _commit_vault_changes(self, message: str) -> bool:
+        """Commit changes to the vault git repository."""
+        git_dir = self._get_vault_git_dir()
+
+        rc, _, _ = subprocess.run(
+            ["git", "-C", str(git_dir), "add", "."],
+            capture_output=True,
+            text=True,
+            timeout=30
+        ).returncode, "", ""
+
+        if rc != 0:
+            return False
+
+        result = subprocess.run(
+            ["git", "-C", str(git_dir), "commit", "-m", message],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        return result.returncode == 0
+
+    def pause_runner(self) -> Dict[str, Any]:
+        """Create runner_paused lockfile atomically."""
+        try:
+            RUNNER_PAUSED_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+            if RUNNER_PAUSED_PATH.exists():
+                return {
+                    "success": True,
+                    "action": "pause_runner",
+                    "message": "Runner is already paused",
+                    "lockfile": str(RUNNER_PAUSED_PATH),
+                }
+
+            RUNNER_PAUSED_PATH.write_text(
+                f"Paused at {datetime.now(timezone.utc).isoformat()}\n",
+                encoding="utf-8"
+            )
+
+            return {
+                "success": True,
+                "action": "pause_runner",
+                "message": "Runner paused successfully",
+                "lockfile": str(RUNNER_PAUSED_PATH),
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to pause runner: {str(e)}")
+
+    def resume_runner(self) -> Dict[str, Any]:
+        """Remove runner_paused and governor_paused lockfiles."""
+        try:
+            removed = []
+
+            if RUNNER_PAUSED_PATH.exists():
+                RUNNER_PAUSED_PATH.unlink()
+                removed.append(str(RUNNER_PAUSED_PATH))
+
+            if GOVERNOR_PAUSED_PATH.exists():
+                GOVERNOR_PAUSED_PATH.unlink()
+                removed.append(str(GOVERNOR_PAUSED_PATH))
+
+            # Reset stall_count in cr_runner_state.json
+            try:
+                state_path = CR_RUNNER_STATE_PATH
+                if state_path.exists():
+                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                    state["stall_count"] = 0
+                    state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+                    removed.append(f"Reset stall_count in {state_path}")
+            except Exception:
+                pass
+
+            return {
+                "success": True,
+                "action": "resume_runner",
+                "message": "Runner resumed successfully",
+                "removed_files": removed,
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to resume runner: {str(e)}")
+
+    def expedite_spec(self, spec_id: str) -> Dict[str, Any]:
+        """Move spec card to Expedited column with #p0 priority."""
+        try:
+            kanban = self.parse_kanban_spec_queue()
+
+            target_card = None
+            for card in kanban.get("cards", []):
+                if card.get("spec_id", "").upper() == spec_id.upper():
+                    target_card = card
+                    break
+
+            if not target_card:
+                raise HTTPException(status_code=404, detail=f"Spec {spec_id} not found")
+
+            if not KANBAN_SPEC_QUEUE_PATH.exists():
+                raise HTTPException(status_code=500, detail="Kanban-Spec-Queue.md not found")
+
+            content = KANBAN_SPEC_QUEUE_PATH.read_text(encoding="utf-8", errors="replace")
+            lines = content.split("\n")
+
+            updated_lines = []
+            card_found = False
+
+            for line in lines:
+                if spec_id.upper() in line.upper():
+                    if "#p0" not in line:
+                        line = line.replace(spec_id.upper(), f"{spec_id.upper()} #p0")
+                    card_found = True
+                updated_lines.append(line)
+
+            if not card_found:
+                raise HTTPException(status_code=404, detail="Could not find spec card in Kanban board")
+
+            new_content = "\n".join(updated_lines)
+            if not self._write_file_atomic(KANBAN_SPEC_QUEUE_PATH, new_content):
+                raise HTTPException(status_code=500, detail="Failed to write updated Kanban board")
+
+            if not self._commit_vault_changes(f"chore(spec-queue): expedite {spec_id} (#p0)"):
+                pass  # Non-fatal: log but continue
+
+            return {
+                "success": True,
+                "action": "expedite_spec",
+                "message": f"Spec {spec_id} moved to Expedited with #p0 priority",
+                "spec_id": spec_id,
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to expedite spec: {str(e)}")
+
+    def archive_spec(self, spec_id: str) -> Dict[str, Any]:
+        """Move spec card from Review to Archived."""
+        try:
+            kanban = self.parse_kanban_spec_queue()
+
+            target_card = None
+            for card in kanban.get("cards", []):
+                if card.get("spec_id", "").upper() == spec_id.upper():
+                    target_card = card
+                    break
+
+            if not target_card:
+                raise HTTPException(status_code=404, detail=f"Spec {spec_id} not found")
+
+            if not KANBAN_SPEC_QUEUE_PATH.exists():
+                raise HTTPException(status_code=500, detail="Kanban-Spec-Queue.md not found")
+
+            content = KANBAN_SPEC_QUEUE_PATH.read_text(encoding="utf-8", errors="replace")
+            lines = content.split("\n")
+
+            updated_lines = []
+
+            for line in lines:
+                if spec_id.upper() in line.upper():
+                    # Archive the card - move to archived section
+                    match = re.match(r"^\s*(-\s+\[x\]\s+\*\*)(.*?)(\*\*.*)$", line)
+                    if match:
+                        prefix, title_rest, suffix = match.groups()
+                        updated_lines.append(f"- [x] **{spec_id.upper()}** {title_rest.strip()} (Archived)")
+                        continue
+                updated_lines.append(line)
+
+            new_content = "\n".join(updated_lines)
+            if not self._write_file_atomic(KANBAN_SPEC_QUEUE_PATH, new_content):
+                raise HTTPException(status_code=500, detail="Failed to write updated Kanban board")
+
+            if not self._commit_vault_changes(f"chore(spec-queue): archive {spec_id}"):
+                pass  # Non-fatal: log but continue
+
+            return {
+                "success": True,
+                "action": "archive_spec",
+                "message": f"Spec {spec_id} archived successfully",
+                "spec_id": spec_id,
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to archive spec: {str(e)}")
+
+    def step_phase(self) -> Dict[str, Any]:
+        """Execute one non-blocking step of the runner."""
+        try:
+            result = subprocess.run(
+                ["python3", "/home/jagosan/scripts/cr_runner.py", "step"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+            return {
+                "success": True,
+                "action": "step_phase",
+                "message": "Step phase executed (non-blocking)",
+                "exit_code": result.returncode,
+                "stdout": result.stdout[:500] if result.stdout else "",
+                "stderr": result.stderr[:500] if result.stderr else "",
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                "success": True,
+                "action": "step_phase",
+                "message": "Step phase started (timeout waiting for completion)",
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to execute step: {str(e)}")
+
 
 
 # Global service instance

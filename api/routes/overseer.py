@@ -109,6 +109,48 @@ async def stream_overseer_updates(
                 # On error, emit an error event and stop
                 yield "data: {\"error\": \"stream error\"}\n\n"
                 break
+@router.post("/action")
+async def execute_action(action_request: dict):
+    """Execute operator commands with validation and atomic file mutations."""
+    from fastapi import Query
+    
+    action = action_request.get("action")
+    spec_id = action_request.get("spec_id")
+    notes = action_request.get("notes", "")
+    
+    valid_actions = ["pause_runner", "resume_runner", "expedite_spec", "archive_spec", "step_phase"]
+    
+    if not action:
+        raise HTTPException(status_code=400, detail="Action is required")
+    
+    if action not in valid_actions:
+        raise HTTPException(status_code=400, detail=f"Invalid action. Must be one of: {valid_actions}")
+    
+    # Validate spec_id for actions that require it
+    if action in ["expedite_spec", "archive_spec"]:
+        if not spec_id:
+            raise HTTPException(status_code=400, detail="spec_id is required for this action")
+    
+    try:
+        if action == "pause_runner":
+            result = overseer_service.pause_runner()
+        elif action == "resume_runner":
+            result = overseer_service.resume_runner()
+        elif action == "expedite_spec":
+            result = overseer_service.expedite_spec(spec_id)
+        elif action == "archive_spec":
+            result = overseer_service.archive_spec(spec_id)
+        elif action == "step_phase":
+            result = overseer_service.step_phase()
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to execute {action}: {str(e)}")
+
+
+
 
     return StreamingResponse(
         generate_events(),

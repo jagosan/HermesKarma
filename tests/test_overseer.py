@@ -167,6 +167,139 @@ class TestAttentionHeuristics(unittest.TestCase):
         stalled = overseer_service._evaluate_stalled(runner_state, kanban)
         self.assertIsInstance(stalled, list)
 
+class TestOverseerActionDispatcher(unittest.TestCase):
+    """Test cases for Overseer action dispatcher (TASK-HK-145)."""
+
+    def test_pause_runner(self):
+        """Test pause_runner creates lockfile atomically."""
+        result = overseer_service.pause_runner()
+        self.assertTrue(result["success"])
+        self.assertEqual(result["action"], "pause_runner")
+        self.assertIn("lockfile", result)
+        
+        # Verify lockfile was created
+        from api.services.overseer_service import RUNNER_PAUSED_PATH
+        self.assertTrue(RUNNER_PAUSED_PATH.exists())
+        
+        # Clean up
+        if RUNNER_PAUSED_PATH.exists():
+            RUNNER_PAUSED_PATH.unlink()
+
+    def test_pause_runner_already_paused(self):
+        """Test pause_runner when already paused."""
+        from api.services.overseer_service import RUNNER_PAUSED_PATH
+        
+        # Create lockfile first
+        RUNNER_PAUSED_PATH.parent.mkdir(parents=True, exist_ok=True)
+        RUNNER_PAUSED_PATH.write_text("test")
+        
+        result = overseer_service.pause_runner()
+        self.assertTrue(result["success"])
+        self.assertIn("already paused", result["message"].lower())
+        
+        # Clean up
+        if RUNNER_PAUSED_PATH.exists():
+            RUNNER_PAUSED_PATH.unlink()
+
+    def test_resume_runner(self):
+        """Test resume_runner removes lockfiles."""
+        from api.services.overseer_service import RUNNER_PAUSED_PATH, GOVERNOR_PAUSED_PATH
+        
+        # Create lockfiles first
+        RUNNER_PAUSED_PATH.parent.mkdir(parents=True, exist_ok=True)
+        RUNNER_PAUSED_PATH.write_text("test")
+        GOVERNOR_PAUSED_PATH.write_text("test")
+        
+        result = overseer_service.resume_runner()
+        self.assertTrue(result["success"])
+        self.assertEqual(result["action"], "resume_runner")
+        self.assertIn("removed_files", result)
+        
+        # Verify lockfiles were removed
+        self.assertFalse(RUNNER_PAUSED_PATH.exists())
+        self.assertFalse(GOVERNOR_PAUSED_PATH.exists())
+
+    def test_expedite_spec(self):
+        """Test expedite_spec moves card to Expedited."""
+        from api.services.overseer_service import KANBAN_SPEC_QUEUE_PATH
+        import os
+        
+        # Create a test Kanban board with proper format
+        test_content = """## 📥 Backlog
+- [ ] **[SPEC-PLAY-038]** Play spec"""
+        KANBAN_SPEC_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        KANBAN_SPEC_QUEUE_PATH.write_text(test_content)
+        
+        # Temporarily override the path for parsing
+        old_board = os.environ.get("HERMES_BOARD")
+        os.environ["HERMES_BOARD"] = str(KANBAN_SPEC_QUEUE_PATH)
+        
+        try:
+            result = overseer_service.expedite_spec("SPEC-PLAY-038")
+            self.assertTrue(result["success"])
+            self.assertEqual(result["action"], "expedite_spec")
+            
+            # Verify spec_id has #p0 added
+            content = KANBAN_SPEC_QUEUE_PATH.read_text()
+            self.assertIn("#p0", content)
+        finally:
+            if old_board:
+                os.environ["HERMES_BOARD"] = old_board
+            else:
+                os.environ.pop("HERMES_BOARD", None)
+            if KANBAN_SPEC_QUEUE_PATH.exists():
+                KANBAN_SPEC_QUEUE_PATH.unlink()
+
+    def test_expedite_spec_not_found(self):
+        """Test expedite_spec with non-existent spec raises HTTPException."""
+        from fastapi import HTTPException
+        
+        # Should raise 404 for non-existent spec
+        with self.assertRaises(HTTPException) as context:
+            overseer_service.expedite_spec("NON-EXISTENT")
+        self.assertEqual(context.exception.status_code, 404)
+
+    def test_archive_spec(self):
+        """Test archive_spec moves card to Archived."""
+        from api.services.overseer_service import KANBAN_SPEC_QUEUE_PATH
+        import os
+        
+        # Create a test Kanban board with proper format
+        test_content = """## 📥 Backlog
+- [x] **[SPEC-ARCHIVE-001]** Test spec"""
+        KANBAN_SPEC_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        KANBAN_SPEC_QUEUE_PATH.write_text(test_content)
+        
+        # Temporarily override the path for parsing
+        old_board = os.environ.get("HERMES_BOARD")
+        os.environ["HERMES_BOARD"] = str(KANBAN_SPEC_QUEUE_PATH)
+        
+        try:
+            result = overseer_service.archive_spec("SPEC-ARCHIVE-001")
+            self.assertTrue(result["success"])
+            self.assertEqual(result["action"], "archive_spec")
+            
+            # Verify the card was archived
+            content = KANBAN_SPEC_QUEUE_PATH.read_text()
+            self.assertIn("(Archived)", content)
+        finally:
+            if old_board:
+                os.environ["HERMES_BOARD"] = old_board
+            else:
+                os.environ.pop("HERMES_BOARD", None)
+            if KANBAN_SPEC_QUEUE_PATH.exists():
+                KANBAN_SPEC_QUEUE_PATH.unlink()
+
+    def test_step_phase(self):
+        """Test step_phase executes runner step."""
+        result = overseer_service.step_phase()
+        self.assertTrue(result["success"])
+        self.assertEqual(result["action"], "step_phase")
+        self.assertIn("message", result)
+
+
+
+
 
 if __name__ == "__main__":
     unittest.main()
