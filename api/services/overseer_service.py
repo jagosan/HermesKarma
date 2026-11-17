@@ -21,6 +21,8 @@ GOALS_DIR = HERMES_DIR.parent / "obsidian/vault/goals"
 CR_RUNNER_STATE_PATH = Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser() / "cr_runner_state.json"
 CR_RUNNER_LOG_PATH = Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser() / "logs" / "cr_runner.log"
 CR_GOVERNOR_LOG_PATH = Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser() / "logs" / "cr_governor.log"
+RUNNER_PAUSED_PATH = HERMES_DIR / "runner_paused"
+GOVERNOR_PAUSED_PATH = HERMES_DIR / "governor_paused"
 
 
 class OverseerService:
@@ -33,119 +35,60 @@ class OverseerService:
     def _read_file_safe(self, path: Path, max_age_seconds: float = 5.0) -> Optional[str]:
         """Read file with graceful fallback if missing or locked."""
         try:
-            current_time = time.time()
-            if str(path) in self._cache and (current_time - self._cache_timestamps.get(str(path), 0)) < max_age_seconds:
-                return self._cache[str(path)]
-
-            if not path.exists():
-                return None
-
-            # Try to acquire a read lock (non-blocking)
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
-                self._cache[str(path)] = content
-                self._cache_timestamps[str(path)] = current_time
-                return content
-
-        except (IOError, OSError, PermissionError):
-            # File is momentarily locked or inaccessible - return cached or None
-            return self._cache.get(str(path))
-
-    def _parse_markdown_card(self, line: str) -> Optional[Dict[str, Any]]:
-        """Parse a single Kanban card line."""
-        # Match patterns like:
-        # - [ ] **[SPEC-PLAY-038]** Title text | Workspace: /path | Board: [[link]]
-        # - [x] **[SPEC-SUN-002]** Completed task
-        match = re.match(
-            r"^\s*-\s*\[(?P<checked>[x ])\]\s*\*\*\[(?P<spec_id>[\w-]+)\]\*\*.*$",
-            line,
-            re.IGNORECASE,
-        )
-        if not match:
+            content = path.read_text(encoding="utf-8", errors="replace")
+            return content
+        except (FileNotFoundError, PermissionError, OSError):
             return None
 
-        result = {
-            "checked": match.group("checked").lower() == "x",
-            "spec_id": match.group("spec_id").upper(),
-            "raw_line": line.strip(),
-        }
-
-        # Extract workspace if present
-        ws_match = re.search(r"Workspace:\s*([^\|]+)", line)
-        if ws_match:
-            result["workspace"] = ws_match.group(1).strip()
-
-        # Extract board link if present
-        board_match = re.search(r"Board:\s*\[\[([^\]]+)\]\]", line)
-        if board_match:
-            result["board_link"] = board_match.group(1).strip()
-
-        # Extract spec link if present
-        spec_match = re.search(r"\[\[([^\]]+)\]\]", line)
-        if spec_match and "board_link" not in result:
-            result["spec_link"] = spec_match.group(1).strip()
-
-        # Extract priority tag
-        priority_match = re.search(r"#p(\d+)", line)
-        if priority_match:
-            result["priority"] = int(priority_match.group(1))
-
-        return result
-
     def parse_kanban_spec_queue(self) -> Dict[str, Any]:
-        """Parse Kanban-Spec-Queue.md into structured state."""
-        content = self._read_file_safe(KANBAN_SPEC_QUEUE_PATH)
+        """Parse Kanban-Spec-Queue.md with graceful fallback."""
+        path = Path(os.environ.get("HERMES_BOARD", str(KANBAN_SPEC_QUEUE_PATH))).expanduser()
+        
+        content = self._read_file_safe(path)
         if not content:
-            return {
-                "cards": [],
-                "columns": {
-                    "backlog": [],
-                    "queued": [],
-                    "expedited": [],
-                    "running": [],
-                    "paused": [],
-                    "review": [],
-                    "done": [],
-                },
-                "counts": {"backlog": 0, "queued": 0, "expedited": 0, "running": 0, "paused": 0, "review": 0, "done": 0},
-            }
+            return {"cards": [], "columns": {}, "counts": {}}
 
+        lines = content.split("\n")
         cards = []
-        columns = {
+        columns: Dict[str, List[Dict[str, Any]]] = {
             "backlog": [],
             "queued": [],
             "expedited": [],
             "running": [],
             "paused": [],
             "review": [],
-            "done": [],
+            "done": []
         }
-
+        
         current_column = None
-        column_headers = {
-            "## 📥 Backlog": "backlog",
-            "## ⏳ Queued": "queued",
-            "## 🚨 Expedited": "expedited",
-            "## 🚧 Running": "running",
-            "## ⏸️ Paused": "paused",
-            "## 🧪 Review & Ready to Test": "review",
-            "## ✅ Done & Archived": "done",
-        }
+        column_pattern = re.compile(r"^##\s+(.+)$")
 
-        for line in content.split("\n"):
-            # Check for column headers
-            for header, col_name in column_headers.items():
-                if header.strip() in line.strip():
-                    current_column = col_name
-                    break
+        for line in lines:
+            column_match = column_pattern.match(line.strip())
+            if column_match:
+                current_column = column_match.group(1).strip().lower()
+                # Normalize column names
+                if "backlog" in current_column:
+                    current_column = "backlog"
+                elif "queue" in current_column or "queued" in current_column:
+                    current_column = "queued"
+                elif "expedite" in current_column:
+                    current_column = "expedited"
+                elif "running" in current_column:
+                    current_column = "running"
+                elif "pause" in current_column:
+                    current_column = "paused"
+                elif "review" in current_column or "ready" in current_column:
+                    current_column = "review"
+                elif "done" in current_column:
+                    current_column = "done"
+                continue
 
-            # Parse cards
-            card = self._parse_markdown_card(line)
-            if card:
-                card["column"] = current_column
-                cards.append(card)
-                if current_column and current_column in columns:
-                    columns[current_column].append(card)
+            if current_column and line.strip().startswith("- ["):
+                card = self._parse_markdown_card(line)
+                if card:
+                    card["column"] = current_column
+                    cards.append(card)
 
         counts = {col: len(cards_list) for col, cards_list in columns.items()}
 
@@ -155,6 +98,57 @@ class OverseerService:
             "counts": counts,
             "last_updated": datetime.now(timezone.utc).isoformat(),
         }
+
+    def _parse_markdown_card(self, line: str) -> Optional[Dict[str, Any]]:
+        """Parse a single Kanban card markdown line."""
+        pattern = r"^\s*-\s+\[(.)\]\s+\*\*\[(.*?)\]\*\*\s+(.+?)\s*(?:\|\s*(.*))?$"
+        match = re.match(pattern, line.strip())
+        
+        if not match:
+            return None
+
+        checked, spec_id, title_rest, extra = match.groups()
+        
+        # Parse title and workspace
+        title = title_rest
+        workspace = None
+        priority = None
+        
+        if extra:
+            ws_match = re.search(r"Workspace:\s*(.+?)(?:\s*\||$)", extra)
+            if ws_match:
+                workspace = ws_match.group(1).strip()
+            
+            pri_match = re.search(r"Priority:\s*#p(\d+)", extra)
+            if pri_match:
+                priority = int(pri_match.group(1))
+
+        return {
+            "checked": checked.lower() == "x",
+            "spec_id": spec_id.upper(),
+            "title": title.strip(),
+            "raw_line": line.strip(),
+            "workspace": workspace,
+            "priority": priority,
+        }
+
+    def parse_goals(self) -> List[Dict[str, Any]]:
+        """Parse all goal files from goals/ directory."""
+        goals = []
+        
+        goals_dir = Path(os.environ.get("HERMES_GOALS_DIR", str(GOALS_DIR))).expanduser()
+        if not goals_dir.exists():
+            return goals
+
+        for goal_file in goals_dir.glob("GOAL-*.md"):
+            goal = self.parse_goal_file(goal_file)
+            if goal:
+                goals.append(goal)
+
+        # Sort by ID for consistent ordering
+        goals.sort(key=lambda g: g.get("id", ""))
+        
+        return goals
 
     def parse_goal_file(self, path: Path) -> Optional[Dict[str, Any]]:
         """Parse a single goal file (GOAL-*.md)."""
@@ -172,7 +166,6 @@ class OverseerService:
         if frontmatter_match:
             try:
                 import yaml
-
                 frontmatter = yaml.safe_load(frontmatter_match.group(1))
                 result.update(frontmatter or {})
             except Exception:
@@ -195,26 +188,11 @@ class OverseerService:
 
         return result
 
-    def parse_goals(self) -> List[Dict[str, Any]]:
-        """Parse all goal files from goals/ directory."""
-        goals = []
-
-        if not GOALS_DIR.exists():
-            return goals
-
-        for goal_file in GOALS_DIR.glob("GOAL-*.md"):
-            goal = self.parse_goal_file(goal_file)
-            if goal:
-                goals.append(goal)
-
-        # Sort by ID for consistent ordering
-        goals.sort(key=lambda g: g.get("id", ""))
-
-        return goals
-
     def parse_cr_runner_state(self) -> Dict[str, Any]:
         """Parse cr_runner_state.json with graceful fallback."""
-        content = self._read_file_safe(CR_RUNNER_STATE_PATH)
+        path = Path(os.environ.get("HERMES_CR_RUNNER_STATE", str(CR_RUNNER_STATE_PATH))).expanduser()
+        content = self._read_file_safe(path)
+        
         if not content:
             return {
                 "stall_count": 0,
@@ -226,12 +204,15 @@ class OverseerService:
 
         try:
             state = json.loads(content)
+            
             # Ensure required fields exist
             for field in ["stall_count", "last_status", "last_spec", "remediation_tried"]:
                 if field not in state:
                     state[field] = None if field == "last_spec" else 0
+                    
             if "updated_at" not in state:
                 state["updated_at"] = datetime.now(timezone.utc).isoformat()
+                
             return state
         except json.JSONDecodeError:
             return {
@@ -248,12 +229,151 @@ class OverseerService:
         goals = self.parse_goals()
         runner_state = self.parse_cr_runner_state()
 
+        # Evaluate attention items (needs_input and stalled)
+        needs_input_items = self._evaluate_needs_input(goals, kanban)
+        stalled_items = self._evaluate_stalled(runner_state, kanban)
+
         return {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "kanban_spec_queue": kanban,
             "goals": goals,
             "runner_state": runner_state,
+            "attention": {
+                "needs_input": needs_input_items,
+                "stalled": stalled_items,
+                "summary": {
+                    "needs_input_count": len(needs_input_items),
+                    "stalled_count": len(stalled_items),
+                    "healthy": len(needs_input_items) == 0 and len(stalled_items) == 0,
+                },
+            },
         }
+
+    def _evaluate_needs_input(self, goals: List[Dict], kanban: Dict) -> List[Dict[str, Any]]:
+        """Evaluate which items need human input."""
+        needs_input = []
+        
+        # Get counts from kanban
+        review_count = kanban.get("counts", {}).get("review", 0)
+        review_cards_list = kanban.get("columns", {}).get("review", [])
+        
+        for goal in goals:
+            status = goal.get("status", "")
+            blocking_state = goal.get("blocking_state", "")
+            
+            # Check if this goal requires playtest
+            if status == "active" and blocking_state == "HUMAN_PLAYTEST_REQUIRED":
+                # Look for specs in review that match this goal
+                for card in review_cards_list:
+                    if card.get("checked") and "spec_id" in card:
+                        needs_input.append({
+                            "id": f"input-play-{card['spec_id'].split('-')[-1]}",
+                            "type": "HUMAN_PLAYTEST_REQUIRED",
+                            "severity": "high",
+                            "title": f"{goal.get('title', 'Unknown Project')} Ready for Playtest",
+                            "description": f"{card['spec_id']} has completed phases and passes tests. Waiting for qualitative evaluation.",
+                            "spec_id": card["spec_id"],
+                            "workspace": card.get("workspace"),
+                            "action_required": "Playtest and click Approve & Archive",
+                        })
+            
+            # Check for READY_FOR_SPEC_AUTHORING
+            if status == "active" and blocking_state == "READY_FOR_SPEC_AUTHORING":
+                needs_input.append({
+                    "id": f"input-spec-{goal.get('id', '').split('-')[-1]}",
+                    "type": "READY_FOR_SPEC_AUTHORING",
+                    "severity": "medium",
+                    "title": f"Ready for Spec Authoring: {goal.get('title', '')}",
+                    "description": f"{goal.get('id')} has finished prior milestone and awaits spec signoff.",
+                    "spec_id": goal.get("id"),
+                    "workspace": goal.get("workspace"),
+                    "action_required": "Review and approve specification",
+                })
+
+        # Check for HUMAN_REVIEW_GATE (>= 3 specs in review)
+        if review_count >= 3:
+            needs_input.append({
+                "id": "input-review-gate",
+                "type": "HUMAN_REVIEW_GATE",
+                "severity": "critical",
+                "title": f"Review Gate Triggered: {review_count} Specs Awaiting Review",
+                "description": f"The governor has enforced a compute yield due to {review_count} specs in Review & Ready to Test.",
+                "spec_id": "N/A",
+                "workspace": "N/A",
+                "action_required": "Review and approve specs to reduce count below 3",
+            })
+
+        return needs_input
+
+    def _evaluate_stalled(self, runner_state: Dict, kanban: Dict) -> List[Dict[str, Any]]:
+        """Evaluate which items are stalled or blocked."""
+        stalled = []
+        
+        # Check for RUNNER_PAUSED
+        if RUNNER_PAUSED_PATH.exists() or GOVERNOR_PAUSED_PATH.exists():
+            stalled.append({
+                "id": "stall-runner-paused",
+                "type": "RUNNER_PAUSED",
+                "severity": "critical",
+                "title": "Autonomous Runner is Paused",
+                "description": "Lockfile is active. Swarm execution is suspended.",
+                "remediation": "Click 'Resume Runner' or run 'cr_runner.py resume' to re-enable continuous dispatch.",
+            })
+
+        # Check for STALL_LOOP_DETECTED
+        stall_count = runner_state.get("stall_count", 0)
+        if stall_count >= 10:
+            stalled.append({
+                "id": "stall-loop-critical",
+                "type": "STALL_LOOP_DETECTED",
+                "severity": "critical",
+                "title": "Stall Loop Detected: Critical",
+                "description": f"cr_runner_state.json reports stall_count = {stall_count}. Runner is cycling without advancing phases.",
+                "remediation": "Investigate runner logs and reset stall_count manually if needed.",
+            })
+        elif stall_count >= 2:
+            stalled.append({
+                "id": "stall-loop-warning",
+                "type": "STALL_LOOP_DETECTED",
+                "severity": "warning",
+                "title": "Stall Loop Detected: Warning",
+                "description": f"cr_runner_state.json reports stall_count = {stall_count}. Runner may be stuck.",
+                "remediation": "Monitor runner logs and consider pausing to investigate.",
+            })
+
+        # Check for PHASE_FAILED
+        last_status = runner_state.get("last_status")
+        if last_status == "PHASE_FAILED":
+            stalled.append({
+                "id": "stall-phase-failed",
+                "type": "PHASE_FAILED",
+                "severity": "critical",
+                "title": "Phase Execution Failed",
+                "description": f"A phase build or test execution failed during subagent execution. Last spec: {runner_state.get('last_spec', 'N/A')}",
+                "remediation": "Review runner logs and fix the failing phase before resuming.",
+            })
+
+        # Check for NO_PHASES_FOUND
+        cards = kanban.get("cards", [])
+        running_cards = [c for c in cards if c.get("column") == "running"]
+        
+        for card in running_cards:
+            if not card.get("checked"):
+                # Found a running card that's not checked - this is normal
+                break
+        else:
+            # All running cards are checked or no running unchecked cards found
+            if running_cards:
+                stalled.append({
+                    "id": "stall-no-phases",
+                    "type": "NO_PHASES_FOUND",
+                    "severity": "warning",
+                    "title": "No Phases Found for Active Spec",
+                    "description": "Active spec card exists in Running column but no uncompleted child subtasks found.",
+                    "remediation": "Check Kanban-Spec-Queue.md for proper task decomposition.",
+                })
+
+        return stalled
 
     def get_spec_details(self, spec_id: str) -> Dict[str, Any]:
         """Get detailed information for a specific spec."""
@@ -261,7 +381,7 @@ class OverseerService:
         kanban = self.parse_kanban_spec_queue()
         target_card = None
 
-        for card in kanban["cards"]:
+        for card in kanban.get("cards", []):
             if card.get("spec_id", "").upper() == spec_id.upper():
                 target_card = card
                 break
@@ -270,11 +390,10 @@ class OverseerService:
             raise HTTPException(status_code=404, detail=f"Spec {spec_id} not found")
 
         # Find the spec file
+        local_spec_path = Path("/home/jagosan/repos/HermesKarma/specs")
         spec_file = None
         spec_path = None
 
-        # Try to find in local workspace first
-        local_spec_path = Path("/home/jagosan/repos/HermesKarma/specs")
         if local_spec_path.exists():
             for f in local_spec_path.glob("*.md"):
                 if spec_id.lower() in f.stem.lower():
@@ -297,49 +416,41 @@ class OverseerService:
                             except Exception:
                                 continue
 
-        # Parse architecture link from docs/MAP.md if available
-        architecture_link = None
-        map_path = Path("/home/jagosan/repos/HermesKarma/docs/MAP.md")
-        if map_path.exists():
-            map_content = self._read_file_safe(map_path)
-            if map_content:
-                # Try to find reference to this spec
-                if spec_id.lower() in map_content.lower():
-                    architecture_link = "/docs/MAP.md"
-
         return {
             "spec_id": spec_id,
             "card": target_card,
-            "spec_file_path": spec_path,
-            "architecture_link": architecture_link,
-            "parsed_spec_content": spec_file[:5000] if spec_file else None,  # Truncate for response
+            "spec_content": spec_file,
+            "spec_path": spec_path,
+            "parsed_at": datetime.now(timezone.utc).isoformat(),
         }
 
     def get_logs(self, lines: int = 100) -> Dict[str, Any]:
-        """Get recent execution logs."""
+        """Get recent logs from cr_runner.log and cr_governor.log."""
         logs = {
             "cr_runner_log": [],
             "cr_governor_log": [],
             "last_updated": datetime.now(timezone.utc).isoformat(),
         }
 
-        # Read cr_runner.log
-        if CR_RUNNER_LOG_PATH.exists():
-            try:
-                with open(CR_RUNNER_LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
+        try:
+            # Read cr_runner.log
+            runner_log_path = Path(os.environ.get("HERMES_RUNNER_LOG", str(CR_RUNNER_LOG_PATH))).expanduser()
+            if runner_log_path.exists():
+                with open(runner_log_path, "r", encoding="utf-8", errors="replace") as f:
                     lines_list = f.readlines()
                     logs["cr_runner_log"] = [line.rstrip() for line in lines_list[-lines:]]
-            except Exception:
-                pass
+        except Exception:
+            pass
 
-        # Read cr_governor.log
-        if CR_GOVERNOR_LOG_PATH.exists():
-            try:
-                with open(CR_GOVERNOR_LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
+        try:
+            # Read cr_governor.log
+            governor_log_path = Path(os.environ.get("HERMES_GOVERNOR_LOG", str(CR_GOVERNOR_LOG_PATH))).expanduser()
+            if governor_log_path.exists():
+                with open(governor_log_path, "r", encoding="utf-8", errors="replace") as f:
                     lines_list = f.readlines()
                     logs["cr_governor_log"] = [line.rstrip() for line in lines_list[-lines:]]
-            except Exception:
-                pass
+        except Exception:
+            pass
 
         return logs
 
