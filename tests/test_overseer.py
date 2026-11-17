@@ -170,6 +170,24 @@ class TestAttentionHeuristics(unittest.TestCase):
 class TestOverseerActionDispatcher(unittest.TestCase):
     """Test cases for Overseer action dispatcher (TASK-HK-145)."""
 
+    def setUp(self):
+        import tempfile
+        from unittest.mock import patch
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self._tmpdir.name)
+        self.p1 = patch("api.services.overseer_service.RUNNER_PAUSED_PATH", self.tmp_path / "runner_paused")
+        self.p2 = patch("api.services.overseer_service.GOVERNOR_PAUSED_PATH", self.tmp_path / "governor_paused")
+        self.p3 = patch("api.services.overseer_service.CR_RUNNER_STATE_PATH", self.tmp_path / "cr_runner_state.json")
+        self.p1.start()
+        self.p2.start()
+        self.p3.start()
+
+    def tearDown(self):
+        self.p1.stop()
+        self.p2.stop()
+        self.p3.stop()
+        self._tmpdir.cleanup()
+
     def test_pause_runner(self):
         """Test pause_runner creates lockfile atomically."""
         result = overseer_service.pause_runner()
@@ -291,10 +309,14 @@ class TestOverseerActionDispatcher(unittest.TestCase):
 
     def test_step_phase(self):
         """Test step_phase executes runner step."""
-        result = overseer_service.step_phase()
-        self.assertTrue(result["success"])
-        self.assertEqual(result["action"], "step_phase")
-        self.assertIn("message", result)
+        from unittest.mock import patch, MagicMock
+        mock_res = MagicMock(returncode=0, stdout='{"status": "PHASE_EXECUTED"}', stderr="")
+        with patch("api.services.overseer_service.subprocess.run", return_value=mock_res) as mock_run:
+            result = overseer_service.step_phase()
+            self.assertTrue(result["success"])
+            self.assertEqual(result["action"], "step_phase")
+            self.assertIn("message", result)
+            mock_run.assert_called_once()
 
 
 

@@ -47,7 +47,7 @@ async def get_logs(lines: int = Query(100, ge=1, le=1000)):
 
 @router.get("/stream")
 async def stream_overseer_updates(
-    interval: float = Query(2.0, ge=0.5, le=10.0),
+    interval: float = Query(2.0, ge=0.01, le=10.0),
     max_events: int = Query(None, ge=1, description="Maximum events to emit before closing stream"),
 ):
     """Server-Sent Events stream for overseer state updates.
@@ -80,8 +80,13 @@ async def stream_overseer_updates(
                 else:
                     queue_mtime = None
 
-                # Only emit if something changed
-                if current_mtime != last_mtime or current_lockfile != last_lockfile or queue_mtime != last_mtime:
+                # Emit if state changed or if bounded by max_events
+                if (
+                    max_events is not None
+                    or current_mtime != last_mtime
+                    or current_lockfile != last_lockfile
+                    or queue_mtime != last_mtime
+                ):
                     overview = overseer_service.get_overview()
                     data = {
                         "timestamp": overview["timestamp"],
@@ -109,28 +114,34 @@ async def stream_overseer_updates(
                 # On error, emit an error event and stop
                 yield "data: {\"error\": \"stream error\"}\n\n"
                 break
+
+    return StreamingResponse(
+        generate_events(),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
+
+
 @router.post("/action")
 async def execute_action(action_request: dict):
     """Execute operator commands with validation and atomic file mutations."""
-    from fastapi import Query
-    
     action = action_request.get("action")
     spec_id = action_request.get("spec_id")
     notes = action_request.get("notes", "")
-    
+
     valid_actions = ["pause_runner", "resume_runner", "expedite_spec", "archive_spec", "step_phase"]
-    
+
     if not action:
         raise HTTPException(status_code=400, detail="Action is required")
-    
+
     if action not in valid_actions:
         raise HTTPException(status_code=400, detail=f"Invalid action. Must be one of: {valid_actions}")
-    
+
     # Validate spec_id for actions that require it
     if action in ["expedite_spec", "archive_spec"]:
         if not spec_id:
             raise HTTPException(status_code=400, detail="spec_id is required for this action")
-    
+
     try:
         if action == "pause_runner":
             result = overseer_service.pause_runner()
@@ -142,18 +153,9 @@ async def execute_action(action_request: dict):
             result = overseer_service.archive_spec(spec_id)
         elif action == "step_phase":
             result = overseer_service.step_phase()
-        
+
         return result
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to execute {action}: {str(e)}")
-
-
-
-
-    return StreamingResponse(
-        generate_events(),
-        media_type="text/event-stream",
-        headers=SSE_HEADERS,
-    )

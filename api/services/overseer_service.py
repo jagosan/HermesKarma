@@ -94,6 +94,8 @@ class OverseerService:
                 if card:
                     card["column"] = current_column
                     cards.append(card)
+                    if current_column in columns:
+                        columns[current_column].append(card)
 
         counts = {col: len(cards_list) for col, cards_list in columns.items()}
 
@@ -113,6 +115,7 @@ class OverseerService:
             return None
 
         checked, spec_id, title_rest, extra = match.groups()
+        spec_id = spec_id.strip().split()[0]
         
         # Parse title and workspace
         title = title_rest
@@ -480,12 +483,12 @@ class OverseerService:
         """Commit changes to the vault git repository."""
         git_dir = self._get_vault_git_dir()
 
-        rc, _, _ = subprocess.run(
-            ["git", "-C", str(git_dir), "add", "."],
+        rc = subprocess.run(
+            ["git", "-C", str(git_dir), "add", "boards/Kanban-Spec-Queue.md"],
             capture_output=True,
             text=True,
             timeout=30
-        ).returncode, "", ""
+        ).returncode
 
         if rc != 0:
             return False
@@ -583,9 +586,12 @@ class OverseerService:
             card_found = False
 
             for line in lines:
-                if spec_id.upper() in line.upper():
+                if f"**[{spec_id.upper()}]**" in line.upper() or spec_id.upper() in line.upper():
                     if "#p0" not in line:
-                        line = line.replace(spec_id.upper(), f"{spec_id.upper()} #p0")
+                        if re.search(r"#p[12]\b", line):
+                            line = re.sub(r"#p[12]\b", "#p0", line, count=1)
+                        else:
+                            line = f"{line.rstrip()} #p0"
                     card_found = True
                 updated_lines.append(line)
 
@@ -635,12 +641,12 @@ class OverseerService:
 
             for line in lines:
                 if spec_id.upper() in line.upper():
-                    # Archive the card - move to archived section
-                    match = re.match(r"^\s*(-\s+\[x\]\s+\*\*)(.*?)(\*\*.*)$", line)
-                    if match:
-                        prefix, title_rest, suffix = match.groups()
-                        updated_lines.append(f"- [x] **{spec_id.upper()}** {title_rest.strip()} (Archived)")
-                        continue
+                    # Archive the card without corrupting **[SPEC-ID]**
+                    line_archived = re.sub(r"^(\s*-\s*)\[.\]", r"\1[x]", line)
+                    if "(Archived)" not in line_archived:
+                        line_archived = f"{line_archived.rstrip()} (Archived)"
+                    updated_lines.append(line_archived)
+                    continue
                 updated_lines.append(line)
 
             new_content = "\n".join(updated_lines)
