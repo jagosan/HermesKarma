@@ -1,17 +1,57 @@
 """Hermes Karma Main FastAPI Application."""
+import asyncio
+import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from api.routes import sessions, analytics, skills, memory, live, tickets, cron, nodes, pantheon, visualizer
+from api.routes import sessions, analytics, skills, memory, live, tickets, cron, nodes, pantheon, visualizer, overseer
+from api.services.node_collector import node_collector
+
+logger = logging.getLogger(__name__)
+
+
+async def _node_telemetry_poll_loop(interval_sec: float = 30.0) -> None:
+    """Continuously sample fleet node & GPU telemetry so history is recorded even with no browser open."""
+    while True:
+        try:
+            await node_collector.get_all_nodes_telemetry(force_refresh=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Background node telemetry poll failed: %s", exc)
+        await asyncio.sleep(interval_sec)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    poll_task = None
+    try:
+        poll_sec = float(os.getenv("HERMES_KARMA_BG_POLL_SEC", "30"))
+    except ValueError:
+        poll_sec = 30.0
+
+    if not os.getenv("PYTEST_CURRENT_TEST") and poll_sec > 0:
+        poll_task = asyncio.create_task(_node_telemetry_poll_loop(poll_sec))
+        logger.info("Started background node telemetry poller (interval=%ss)", poll_sec)
+
+    try:
+        yield
+    finally:
+        if poll_task is not None:
+            poll_task.cancel()
+            await asyncio.gather(poll_task, return_exceptions=True)
+
 
 app = FastAPI(
     title="Hermes Karma",
     description="Local-first observability, telemetry, trajectory inspection, and session analytics dashboard for Hermes Agent.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS middleware
@@ -44,6 +84,7 @@ app.include_router(tickets.router)
 app.include_router(cron.router)
 app.include_router(nodes.router)
 app.include_router(visualizer.router)
+app.include_router(overseer.router)
 
 # Mount static files
 static_dir = Path(__file__).resolve().parent / "static"

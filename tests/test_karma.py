@@ -875,6 +875,23 @@ class TestHermesKarma(unittest.TestCase):
         }
         self.assertEqual(hermes_reader.attribute_session_persona(heffalump_named), "heffalump")
 
+        # Pantheon Swarm specialist prompt with @heffalump should NOT be swallowed by Owl
+        heffalump_swarm_prompt = {
+            "title": "Implement SPEC-PLAY-038 Phase 6 smoke tests",
+            "source": "oneshot",
+            "model": "gemini-3.8-flash",
+            "first_prompt": "You are the Pantheon Swarm autonomous engineer (@heffalump)."
+        }
+        self.assertEqual(hermes_reader.attribute_session_persona(heffalump_swarm_prompt), "heffalump")
+
+        # Non-subagent oneshot/cli session running deepseek-v4 -> Heffalump
+        heffalump_oneshot = {
+            "title": "TEST",
+            "source": "oneshot",
+            "model": "deepseek-v4:262k"
+        }
+        self.assertEqual(hermes_reader.attribute_session_persona(heffalump_oneshot), "heffalump")
+
         # Subagent with vault keyword -> Pooh
         pooh_sub = {
             "title": "Obsidian vault runbook gardening",
@@ -1670,6 +1687,25 @@ class TestHermesKarma(unittest.TestCase):
         self.assertEqual(MAX_SESSION_EXPLORATION_THRASH_RATIO, 0.8)
         self.assertEqual(MAX_SESSION_EXPLORATION_MIN_TURNS, 10)
         self.assertEqual(MAX_SINGLE_SESSION_CLOUD_COST_USD, 5.0)
+
+    def test_background_node_telemetry_poller_starts_and_cancels(self):
+        """Verify _node_telemetry_poll_loop polls force_refresh=True and cancels cleanly."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+        from api.main import _node_telemetry_poll_loop
+
+        async def _run():
+            mock_collect = AsyncMock(return_value=[])
+            with patch.object(node_collector, "get_all_nodes_telemetry", mock_collect):
+                task = asyncio.create_task(_node_telemetry_poll_loop(interval_sec=0.05))
+                await asyncio.sleep(0.08)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                self.assertGreaterEqual(mock_collect.await_count, 1)
+                mock_collect.assert_awaited_with(force_refresh=True)
+
+        asyncio.run(_run())
 
 
 if __name__ == "__main__":

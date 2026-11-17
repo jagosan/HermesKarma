@@ -2619,8 +2619,10 @@ class HermesReader:
             return prof
 
         # 2. Textual persona mentions in title, goal, context, cwd, custom notes, or first prompt
+        # Check explicit @persona / persona: / emoji tags BEFORE generic "pantheon swarm" fallback
+        # so specialist prompts like "Pantheon Swarm autonomous engineer (@heffalump)" are not swallowed by Owl.
         text = f"{session.get('title') or ''} {session.get('goal') or ''} {session.get('context') or ''} {session.get('cwd') or ''} {session.get('first_prompt') or ''}".lower()
-        if "@owl" in text or "owl:" in text or "🦉" in text or "pantheon-swarm" in text or "pantheon swarm" in text or "/pantheon-swarm" in text:
+        if "@owl" in text or "owl:" in text or "🦉" in text:
             return "owl"
         if "@rabbit" in text or "rabbit:" in text or "🐰" in text:
             return "rabbit"
@@ -2640,8 +2642,10 @@ class HermesReader:
             return "ingest"
         if "@heffalump" in text or "heffalump:" in text or "🐘" in text:
             return "heffalump"
+        if "pantheon-swarm" in text or "pantheon swarm" in text or "/pantheon-swarm" in text:
+            return "owl"
 
-        # 3. Model & source matching for subagents and delegations
+        # 3. Model & source matching for subagents, delegations, and dedicated local models
         is_subagent = (
             session.get("source") == "subagent"
             or bool(session.get("parent_session_id"))
@@ -2650,6 +2654,9 @@ class HermesReader:
         )
         model = (session.get("model") or "").lower()
         provider = (session.get("billing_provider") or "").lower()
+
+        if "deepseek" in model:
+            return "heffalump"
 
         if is_subagent:
             if "ernie" in model:
