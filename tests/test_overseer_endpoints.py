@@ -6,11 +6,12 @@ Comprehensive unit and integration tests for:
 - Parser resilience against malformed markdown
 """
 import json
+import os
 import tempfile
+import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-import pytest
 from fastapi.testclient import TestClient
 
 # Import the full app with lifespan context
@@ -18,11 +19,10 @@ from api.main import app
 from api.services.overseer_service import overseer_service
 
 
-class TestOverseerEndpoints:
+class TestOverseerEndpoints(unittest.TestCase):
     """Test cases for Overseer REST endpoints."""
 
-    @pytest.fixture(autouse=True)
-    def setup_client(self):
+    def setUp(self):
         """Set up test client with proper app."""
         self.client = TestClient(app)
 
@@ -100,13 +100,14 @@ class TestOverseerEndpoints:
         assert response.status_code == 422  # Validation error
 
 
-class TestOverseerActionEndpoints:
+class TestOverseerActionEndpoints(unittest.TestCase):
     """Test cases for Overseer action endpoints."""
 
-    @pytest.fixture(autouse=True)
-    def setup_client(self, tmp_path, monkeypatch):
+    def setUp(self):
         """Set up test client with isolated temp paths and mocked subprocesses."""
         self.client = TestClient(app)
+        self._tmpdir = tempfile.TemporaryDirectory()
+        tmp_path = Path(self._tmpdir.name)
         board_file = tmp_path / "Kanban-Spec-Queue.md"
         board_file.write_text(
             "## ⏳ Queued\n"
@@ -115,11 +116,27 @@ class TestOverseerActionEndpoints:
             "- [x] **[SPEC-ARCHIVE-001]** Test Archive Spec #p1\n",
             encoding="utf-8",
         )
-        monkeypatch.setenv("HERMES_BOARD", str(board_file))
-        monkeypatch.setattr("api.services.overseer_service.RUNNER_PAUSED_PATH", tmp_path / "runner_paused")
-        monkeypatch.setattr("api.services.overseer_service.GOVERNOR_PAUSED_PATH", tmp_path / "governor_paused")
-        monkeypatch.setattr("api.services.overseer_service.CR_RUNNER_STATE_PATH", tmp_path / "cr_runner_state.json")
-        monkeypatch.setattr(overseer_service, "_commit_vault_changes", lambda msg: True)
+        self._old_board = os.environ.get("HERMES_BOARD")
+        os.environ["HERMES_BOARD"] = str(board_file)
+        self.p1 = patch("api.services.overseer_service.RUNNER_PAUSED_PATH", tmp_path / "runner_paused")
+        self.p2 = patch("api.services.overseer_service.GOVERNOR_PAUSED_PATH", tmp_path / "governor_paused")
+        self.p3 = patch("api.services.overseer_service.CR_RUNNER_STATE_PATH", tmp_path / "cr_runner_state.json")
+        self.p4 = patch.object(overseer_service, "_commit_vault_changes", return_value=True)
+        self.p1.start()
+        self.p2.start()
+        self.p3.start()
+        self.p4.start()
+
+    def tearDown(self):
+        self.p1.stop()
+        self.p2.stop()
+        self.p3.stop()
+        self.p4.stop()
+        if self._old_board is not None:
+            os.environ["HERMES_BOARD"] = self._old_board
+        else:
+            os.environ.pop("HERMES_BOARD", None)
+        self._tmpdir.cleanup()
 
     def test_post_action_pause_runner(self):
         """Test POST /api/overseer/action with pause_runner."""
@@ -213,18 +230,18 @@ class TestOverseerActionEndpoints:
         assert "detail" in data
 
 
-class TestSSEStream:
+class TestSSEStream(unittest.TestCase):
     """Test cases for SSE stream endpoint."""
 
-    @pytest.fixture(autouse=True)
-    def setup_client(self):
+    def setUp(self):
         """Set up test client with proper app."""
         self.client = TestClient(app)
 
     def test_get_stream_returns_200(self):
         """Test GET /api/overseer/stream returns 200 OK with SSE headers."""
         # Use max_events=1 to ensure the stream closes after one event
-        response = self.client.get("/api/overseer/stream?max_events=1&interval=0.1")
+        # interval must be >= 0.5 per route validation
+        response = self.client.get("/api/overseer/stream?max_events=1&interval=0.5")
         assert response.status_code == 200
         assert "text/event-stream" in response.headers["content-type"]
         assert "no-cache" in response.headers["cache-control"]
@@ -232,7 +249,8 @@ class TestSSEStream:
     def test_get_stream_emits_events(self):
         """Test GET /api/overseer/stream emits SSE events."""
         # Use max_events=1 to ensure the stream closes after one event
-        response = self.client.get("/api/overseer/stream?max_events=1&interval=0.1")
+        # interval must be >= 0.5 per route validation
+        response = self.client.get("/api/overseer/stream?max_events=1&interval=0.5")
         assert response.status_code == 200
         
         # Parse SSE events from response text
@@ -245,8 +263,8 @@ class TestSSEStream:
 
     def test_get_stream_max_events_limit(self):
         """Test GET /api/overseer/stream respects max_events parameter."""
-        # Request 3 events with very short interval
-        response = self.client.get("/api/overseer/stream?max_events=3&interval=0.05")
+        # Request 3 events with minimum interval (0.5)
+        response = self.client.get("/api/overseer/stream?max_events=3&interval=0.5")
         assert response.status_code == 200
         
         content = response.text.strip()
@@ -265,7 +283,7 @@ class TestSSEStream:
         assert len(content) > 0
 
 
-class TestParserResilience:
+class TestParserResilience(unittest.TestCase):
     """Test cases for parser resilience against malformed input."""
 
     def test_parse_markdown_card_empty_line(self):
@@ -352,7 +370,7 @@ class TestParserResilience:
         assert "SPECIAL" in result["spec_id"]
 
 
-class TestAttentionHeuristicsEdgeCases:
+class TestAttentionHeuristicsEdgeCases(unittest.TestCase):
     """Test edge cases for attention heuristics."""
 
     def test_evaluate_needs_input_empty_goals(self):
@@ -382,11 +400,10 @@ class TestAttentionHeuristicsEdgeCases:
         assert isinstance(result, list)
 
 
-class TestIntegrationEndToEnd:
+class TestIntegrationEndToEnd(unittest.TestCase):
     """Integration tests for end-to-end Overseer flow."""
 
-    @pytest.fixture(autouse=True)
-    def setup_client(self):
+    def setUp(self):
         """Set up test client with proper app."""
         self.client = TestClient(app)
 
@@ -436,4 +453,4 @@ class TestIntegrationEndToEnd:
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    unittest.main()

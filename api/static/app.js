@@ -234,6 +234,7 @@ function switchTab(tabId) {
 
   if (tabId === 'sessions') loadSessions();
   else if (tabId === 'analytics') loadAnalytics();
+  else if (tabId === 'overseer') loadOverseer();
   else if (tabId === 'pantheon') loadPantheon();
   else if (tabId === 'skills') loadSkills();
   else if (tabId === 'memory') loadMemory();
@@ -3270,8 +3271,157 @@ window.addEventListener('resize', () => {
 });
 
 // ----------------------------------------------------
+// CHRISTOPHER ROBIN OVERSEER & SPEC QUEUE (SPEC-HK-010)
+// ----------------------------------------------------
+async function loadOverseer() {
+  try {
+    const res = await fetch('/api/overseer/overview');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderOverseerOverview(data);
+  } catch (err) {
+    console.error('[Overseer] Failed to load overview:', err);
+  }
+}
+
+function renderOverseerOverview(data) {
+  const kanban = data.kanban_spec_queue || {};
+  const cols = kanban.columns || {};
+  const runner = data.runner_state || {};
+  const attention = data.attention || {};
+  const goals = data.goals || [];
+
+  // Attention Banners
+  const attEl = document.getElementById('overseerAttentionContainer');
+  if (attEl) {
+    const banners = [];
+    (attention.needs_input || []).forEach(item => {
+      banners.push(`
+        <div class="rounded-xl border border-amber-500/40 bg-amber-950/40 p-4 text-amber-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <div class="font-bold text-sm flex items-center space-x-2"><span>🟡</span><span>${escapeHtml(item.title)}</span></div>
+            <div class="text-xs text-amber-300/80 mt-1">${escapeHtml(item.description || '')}</div>
+          </div>
+          ${item.spec_id && item.spec_id !== 'N/A' ? `<button onclick="overseerAction('archive_spec', '${escapeHtml(item.spec_id)}')" class="px-3 py-2 min-h-[44px] rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold">Approve & Archive</button>` : ''}
+        </div>`);
+    });
+    (attention.stalled || []).forEach(item => {
+      banners.push(`
+        <div class="rounded-xl border border-rose-500/40 bg-rose-950/40 p-4 text-rose-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <div class="font-bold text-sm flex items-center space-x-2"><span>🔴</span><span>${escapeHtml(item.title)}</span></div>
+            <div class="text-xs text-rose-300/80 mt-1">${escapeHtml(item.description || '')}</div>
+          </div>
+          ${item.type === 'RUNNER_PAUSED' ? `<button onclick="overseerResumeRunner()" class="px-3 py-2 min-h-[44px] rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold">Resume Runner</button>` : ''}
+        </div>`);
+    });
+    attEl.innerHTML = banners.join('');
+  }
+
+  // Runner HUD
+  const isPaused = (attention.stalled || []).some(s => s.type === 'RUNNER_PAUSED');
+  const statusStr = isPaused ? 'PAUSED' : (runner.stall_count >= 2 ? 'STALLED' : 'RUNNING');
+  const statusEl = document.getElementById('overseerRunnerStatus');
+  if (statusEl) statusEl.textContent = statusStr;
+  const badgeEl = document.getElementById('overseerRunnerStatusBadge');
+  if (badgeEl) badgeEl.textContent = statusStr;
+
+  const pauseBtn = document.getElementById('overseerPauseRunnerBtn');
+  const resumeBtn = document.getElementById('overseerResumeRunnerBtn');
+  if (pauseBtn) pauseBtn.classList.toggle('hidden', isPaused);
+  if (resumeBtn) resumeBtn.classList.toggle('hidden', !isPaused);
+
+  const runningCards = cols.running || [];
+  const activeCard = runningCards[0] || null;
+  const activeTitleEl = document.getElementById('overseerActiveSpecTitle');
+  const activeIdEl = document.getElementById('overseerActiveSpecId');
+  if (activeTitleEl) activeTitleEl.textContent = activeCard ? activeCard.title : 'None (Idle)';
+  if (activeIdEl) activeIdEl.textContent = activeCard ? activeCard.spec_id : '-';
+
+  // Goals Matrix
+  const goalsEl = document.getElementById('overseerGoalsGridContainer');
+  if (goalsEl) {
+    if (!goals.length) {
+      goalsEl.innerHTML = `<div class="col-span-full py-6 text-center text-slate-500 text-xs">No macro-goals found in goals/GOAL-*.md</div>`;
+    } else {
+      goalsEl.innerHTML = goals.map(g => `
+        <div class="rounded-xl border border-slate-800 bg-dark-950 p-4 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-mono font-bold text-brand-400">${escapeHtml(g.id)}</span>
+            <span class="px-2 py-0.5 rounded text-[10px] font-semibold uppercase bg-slate-800 text-slate-300">${escapeHtml(g.status || 'active')}</span>
+          </div>
+          <div class="text-sm font-bold text-white">${escapeHtml(g.title || g.id)}</div>
+          <div class="text-[11px] font-mono text-slate-400">${escapeHtml(g.blocking_state || 'READY_FOR_EXECUTION')}</div>
+        </div>
+      `).join('');
+    }
+  }
+
+  // Kanban Columns
+  const colMap = {
+    backlog: 'overseerKanbanBacklog',
+    queued: 'overseerKanbanQueued',
+    expedited: 'overseerKanbanExpedited',
+    running: 'overseerKanbanRunning',
+    paused: 'overseerKanbanPaused',
+    review: 'overseerKanbanReview'
+  };
+  Object.keys(colMap).forEach(colKey => {
+    const container = document.getElementById(colMap[colKey]);
+    if (!container) return;
+    const list = cols[colKey] || [];
+    if (!list.length) {
+      container.innerHTML = `<div class="text-[11px] text-slate-600 italic py-2">Empty</div>`;
+      return;
+    }
+    container.innerHTML = list.map(c => `
+      <div class="rounded-lg border border-slate-800 bg-dark-950 p-2.5 space-y-1.5">
+        <div class="flex items-center justify-between">
+          <span class="text-[11px] font-mono font-bold text-brand-300">${escapeHtml(c.spec_id)}</span>
+          ${c.priority !== null && c.priority !== undefined ? `<span class="text-[10px] font-mono text-amber-400">#p${c.priority}</span>` : ''}
+        </div>
+        <div class="text-xs text-slate-200 line-clamp-2">${escapeHtml(c.title)}</div>
+        <div class="flex items-center gap-1 pt-1">
+          ${colKey === 'queued' || colKey === 'backlog' ? `<button onclick="overseerAction('expedite_spec', '${escapeHtml(c.spec_id)}')" class="px-2 py-1 rounded bg-amber-950/60 hover:bg-amber-900/60 text-amber-300 border border-amber-500/30 text-[10px]">Expedite</button>` : ''}
+          ${colKey === 'review' ? `<button onclick="overseerAction('archive_spec', '${escapeHtml(c.spec_id)}')" class="px-2 py-1 rounded bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 border border-emerald-500/30 text-[10px]">Approve</button>` : ''}
+        </div>
+      </div>
+    `).join('');
+  });
+
+  if (window.lucide) lucide.createIcons();
+}
+
+async function overseerAction(action, specId) {
+  try {
+    const body = { action };
+    if (specId) body.spec_id = specId;
+    await fetch('/api/overseer/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    await loadOverseer();
+  } catch (err) {
+    console.error('[Overseer] Action error:', err);
+  }
+}
+
+function overseerPauseRunner() {
+  return overseerAction('pause_runner');
+}
+
+function overseerResumeRunner() {
+  return overseerAction('resume_runner');
+}
+
+// ----------------------------------------------------
 // Explicit window bindings for inline HTML handlers
 // ----------------------------------------------------
+window.loadOverseer = loadOverseer;
+window.overseerAction = overseerAction;
+window.overseerPauseRunner = overseerPauseRunner;
+window.overseerResumeRunner = overseerResumeRunner;
 window.visSetCameraPreset = visSetCameraPreset;
 window.visResetCamera = visResetCamera;
 window.visToggleAutoRotate = visToggleAutoRotate;
