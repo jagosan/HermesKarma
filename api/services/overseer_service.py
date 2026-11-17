@@ -41,10 +41,14 @@ class OverseerService:
         except (FileNotFoundError, PermissionError, OSError):
             return None
 
+    def _get_kanban_path(self) -> Path:
+        """Get the Kanban-Spec-Queue.md path, respecting HERMES_BOARD environment override."""
+        return Path(os.environ.get("HERMES_BOARD", str(KANBAN_SPEC_QUEUE_PATH))).expanduser()
+
     def parse_kanban_spec_queue(self) -> Dict[str, Any]:
         """Parse Kanban-Spec-Queue.md with graceful fallback."""
-        path = Path(os.environ.get("HERMES_BOARD", str(KANBAN_SPEC_QUEUE_PATH))).expanduser()
-        
+        path = self._get_kanban_path()
+
         content = self._read_file_safe(path)
         if not content:
             return {"cards": [], "columns": {}, "counts": {}}
@@ -568,10 +572,11 @@ class OverseerService:
             if not target_card:
                 raise HTTPException(status_code=404, detail=f"Spec {spec_id} not found")
 
-            if not KANBAN_SPEC_QUEUE_PATH.exists():
+            board_path = self._get_kanban_path()
+            if not board_path.exists():
                 raise HTTPException(status_code=500, detail="Kanban-Spec-Queue.md not found")
 
-            content = KANBAN_SPEC_QUEUE_PATH.read_text(encoding="utf-8", errors="replace")
+            content = board_path.read_text(encoding="utf-8", errors="replace")
             lines = content.split("\n")
 
             updated_lines = []
@@ -588,7 +593,7 @@ class OverseerService:
                 raise HTTPException(status_code=404, detail="Could not find spec card in Kanban board")
 
             new_content = "\n".join(updated_lines)
-            if not self._write_file_atomic(KANBAN_SPEC_QUEUE_PATH, new_content):
+            if not self._write_file_atomic(board_path, new_content):
                 raise HTTPException(status_code=500, detail="Failed to write updated Kanban board")
 
             if not self._commit_vault_changes(f"chore(spec-queue): expedite {spec_id} (#p0)"):
@@ -619,10 +624,11 @@ class OverseerService:
             if not target_card:
                 raise HTTPException(status_code=404, detail=f"Spec {spec_id} not found")
 
-            if not KANBAN_SPEC_QUEUE_PATH.exists():
+            board_path = self._get_kanban_path()
+            if not board_path.exists():
                 raise HTTPException(status_code=500, detail="Kanban-Spec-Queue.md not found")
 
-            content = KANBAN_SPEC_QUEUE_PATH.read_text(encoding="utf-8", errors="replace")
+            content = board_path.read_text(encoding="utf-8", errors="replace")
             lines = content.split("\n")
 
             updated_lines = []
@@ -638,7 +644,7 @@ class OverseerService:
                 updated_lines.append(line)
 
             new_content = "\n".join(updated_lines)
-            if not self._write_file_atomic(KANBAN_SPEC_QUEUE_PATH, new_content):
+            if not self._write_file_atomic(board_path, new_content):
                 raise HTTPException(status_code=500, detail="Failed to write updated Kanban board")
 
             if not self._commit_vault_changes(f"chore(spec-queue): archive {spec_id}"):

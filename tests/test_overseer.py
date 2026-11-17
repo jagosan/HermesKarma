@@ -221,74 +221,73 @@ class TestOverseerActionDispatcher(unittest.TestCase):
 
     def test_expedite_spec(self):
         """Test expedite_spec moves card to Expedited."""
-        from api.services.overseer_service import KANBAN_SPEC_QUEUE_PATH
         import os
+        import tempfile
+        from unittest.mock import patch
         
-        # Create a test Kanban board with proper format
         test_content = """## 📥 Backlog
 - [ ] **[SPEC-PLAY-038]** Play spec"""
-        KANBAN_SPEC_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        KANBAN_SPEC_QUEUE_PATH.write_text(test_content)
-        
-        # Temporarily override the path for parsing
+        with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".md") as tf:
+            tf.write(test_content)
+            temp_path = tf.name
+
         old_board = os.environ.get("HERMES_BOARD")
-        os.environ["HERMES_BOARD"] = str(KANBAN_SPEC_QUEUE_PATH)
-        
+        os.environ["HERMES_BOARD"] = temp_path
+
         try:
-            result = overseer_service.expedite_spec("SPEC-PLAY-038")
-            self.assertTrue(result["success"])
-            self.assertEqual(result["action"], "expedite_spec")
-            
-            # Verify spec_id has #p0 added
-            content = KANBAN_SPEC_QUEUE_PATH.read_text()
-            self.assertIn("#p0", content)
+            with patch.object(overseer_service, "_commit_vault_changes", return_value=True):
+                result = overseer_service.expedite_spec("SPEC-PLAY-038")
+                self.assertTrue(result["success"])
+                self.assertEqual(result["action"], "expedite_spec")
+
+                content = Path(temp_path).read_text()
+                self.assertIn("#p0", content)
         finally:
             if old_board:
                 os.environ["HERMES_BOARD"] = old_board
             else:
                 os.environ.pop("HERMES_BOARD", None)
-            if KANBAN_SPEC_QUEUE_PATH.exists():
-                KANBAN_SPEC_QUEUE_PATH.unlink()
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
 
     def test_expedite_spec_not_found(self):
         """Test expedite_spec with non-existent spec raises HTTPException."""
         from fastapi import HTTPException
         
-        # Should raise 404 for non-existent spec
         with self.assertRaises(HTTPException) as context:
             overseer_service.expedite_spec("NON-EXISTENT")
         self.assertEqual(context.exception.status_code, 404)
 
     def test_archive_spec(self):
         """Test archive_spec moves card to Archived."""
-        from api.services.overseer_service import KANBAN_SPEC_QUEUE_PATH
         import os
+        import tempfile
+        from unittest.mock import patch
         
-        # Create a test Kanban board with proper format
         test_content = """## 📥 Backlog
 - [x] **[SPEC-ARCHIVE-001]** Test spec"""
-        KANBAN_SPEC_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        KANBAN_SPEC_QUEUE_PATH.write_text(test_content)
-        
-        # Temporarily override the path for parsing
+        with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".md") as tf:
+            tf.write(test_content)
+            temp_path = tf.name
+
         old_board = os.environ.get("HERMES_BOARD")
-        os.environ["HERMES_BOARD"] = str(KANBAN_SPEC_QUEUE_PATH)
-        
+        os.environ["HERMES_BOARD"] = temp_path
+
         try:
-            result = overseer_service.archive_spec("SPEC-ARCHIVE-001")
-            self.assertTrue(result["success"])
-            self.assertEqual(result["action"], "archive_spec")
-            
-            # Verify the card was archived
-            content = KANBAN_SPEC_QUEUE_PATH.read_text()
-            self.assertIn("(Archived)", content)
+            with patch.object(overseer_service, "_commit_vault_changes", return_value=True):
+                result = overseer_service.archive_spec("SPEC-ARCHIVE-001")
+                self.assertTrue(result["success"])
+                self.assertEqual(result["action"], "archive_spec")
+
+                content = Path(temp_path).read_text()
+                self.assertIn("(Archived)", content)
         finally:
             if old_board:
                 os.environ["HERMES_BOARD"] = old_board
             else:
                 os.environ.pop("HERMES_BOARD", None)
-            if KANBAN_SPEC_QUEUE_PATH.exists():
-                KANBAN_SPEC_QUEUE_PATH.unlink()
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
 
     def test_step_phase(self):
         """Test step_phase executes runner step."""
