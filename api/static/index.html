@@ -1398,6 +1398,10 @@
 
     <!-- Mobile bottom tab bar -->
     <nav class="md:hidden fixed bottom-0 inset-x-0 z-40 bg-dark-900/95 backdrop-blur border-t border-slate-800/80 flex items-stretch justify-around px-1 pb-[env(safe-area-inset-bottom)]" aria-label="Primary">
+      <button onclick="switchTab('overseer'); closeMobileMenu()" id="tab-overseer-m" class="mobile-tab-btn flex flex-col items-center justify-center gap-0.5 px-1 py-2 text-[10px] font-medium text-slate-400">
+        <i data-lucide="compass" class="w-4 h-4"></i>
+        <span>Overseer</span>
+      </button>
       <button onclick="switchTab('sessions'); closeMobileMenu()" id="tab-sessions-m" class="mobile-tab-btn flex flex-col items-center justify-center gap-0.5 px-1 py-2 text-[10px] font-medium text-slate-400">
         <i data-lucide="messages-square" class="w-4 h-4"></i>
         <span>Sessions</span>
