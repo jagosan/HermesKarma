@@ -3297,22 +3297,35 @@ function renderOverseerOverview(data) {
     const banners = [];
     (attention.needs_input || []).forEach(item => {
       banners.push(`
-        <div class="rounded-xl border border-amber-500/40 bg-amber-950/40 p-4 text-amber-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div class="rounded-xl border border-amber-500/40 bg-amber-950/40 p-4 text-amber-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 shadow-lg shadow-amber-950/20">
           <div>
             <div class="font-bold text-sm flex items-center space-x-2"><span>🟡</span><span>${escapeHtml(item.title)}</span></div>
             <div class="text-xs text-amber-300/80 mt-1">${escapeHtml(item.description || '')}</div>
           </div>
-          ${item.spec_id && item.spec_id !== 'N/A' ? `<button onclick="overseerAction('archive_spec', '${escapeHtml(item.spec_id)}')" class="px-3 py-2 min-h-[44px] rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold">Approve & Archive</button>` : ''}
+          <div class="flex items-center gap-2 shrink-0">
+            ${item.spec_id && item.spec_id !== 'N/A' ? `
+              <button onclick="openOverseerDetail('${escapeHtml(item.spec_id)}')" class="px-3 py-2 min-h-[44px] rounded-lg bg-amber-900/60 hover:bg-amber-800/60 text-amber-200 border border-amber-500/30 text-xs font-semibold flex items-center space-x-1 transition">
+                <i data-lucide="file-search" class="w-4 h-4"></i>
+                <span>Review Dossier</span>
+              </button>
+              <button onclick="overseerAction('archive_spec', '${escapeHtml(item.spec_id)}')" class="px-3.5 py-2 min-h-[44px] rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center space-x-1.5 transition shadow-lg shadow-emerald-950/30">
+                <i data-lucide="check-circle" class="w-4 h-4"></i>
+                <span>Approve & Archive</span>
+              </button>
+            ` : ''}
+          </div>
         </div>`);
     });
     (attention.stalled || []).forEach(item => {
       banners.push(`
-        <div class="rounded-xl border border-rose-500/40 bg-rose-950/40 p-4 text-rose-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div class="rounded-xl border border-rose-500/40 bg-rose-950/40 p-4 text-rose-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 shadow-lg shadow-rose-950/20">
           <div>
             <div class="font-bold text-sm flex items-center space-x-2"><span>🔴</span><span>${escapeHtml(item.title)}</span></div>
             <div class="text-xs text-rose-300/80 mt-1">${escapeHtml(item.description || '')}</div>
           </div>
-          ${item.type === 'RUNNER_PAUSED' ? `<button onclick="overseerResumeRunner()" class="px-3 py-2 min-h-[44px] rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold">Resume Runner</button>` : ''}
+          <div class="flex items-center gap-2 shrink-0">
+            ${item.type === 'RUNNER_PAUSED' ? `<button onclick="overseerResumeRunner()" class="px-3 py-2 min-h-[44px] rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center space-x-1.5 transition"><i data-lucide="play" class="w-4 h-4"></i><span>Resume Runner</span></button>` : ''}
+          </div>
         </div>`);
     });
     attEl.innerHTML = banners.join('');
@@ -3375,15 +3388,21 @@ function renderOverseerOverview(data) {
       return;
     }
     container.innerHTML = list.map(c => `
-      <div class="rounded-lg border border-slate-800 bg-dark-950 p-2.5 space-y-1.5">
+      <div class="rounded-lg border border-slate-800 bg-dark-950 p-2.5 space-y-1.5 hover:border-brand-500/40 transition cursor-pointer group" onclick="openOverseerDetail('${escapeHtml(c.spec_id)}')">
         <div class="flex items-center justify-between">
-          <span class="text-[11px] font-mono font-bold text-brand-300">${escapeHtml(c.spec_id)}</span>
+          <span class="text-[11px] font-mono font-bold text-brand-300 group-hover:text-brand-200 transition">${escapeHtml(c.spec_id)}</span>
           ${c.priority !== null && c.priority !== undefined ? `<span class="text-[10px] font-mono text-amber-400">#p${c.priority}</span>` : ''}
         </div>
         <div class="text-xs text-slate-200 line-clamp-2">${escapeHtml(c.title)}</div>
-        <div class="flex items-center gap-1 pt-1">
-          ${colKey === 'queued' || colKey === 'backlog' ? `<button onclick="overseerAction('expedite_spec', '${escapeHtml(c.spec_id)}')" class="px-2 py-1 rounded bg-amber-950/60 hover:bg-amber-900/60 text-amber-300 border border-amber-500/30 text-[10px]">Expedite</button>` : ''}
-          ${colKey === 'review' ? `<button onclick="overseerAction('archive_spec', '${escapeHtml(c.spec_id)}')" class="px-2 py-1 rounded bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 border border-emerald-500/30 text-[10px]">Approve</button>` : ''}
+        <div class="flex items-center justify-between pt-1 text-[10px] text-slate-500 font-mono">
+          <span>${c.engine ? `@${escapeHtml(c.engine)}` : ''}</span>
+          <div class="flex items-center gap-1">
+            ${colKey === 'queued' || colKey === 'backlog' ? `<button onclick="event.stopPropagation(); overseerAction('expedite_spec', '${escapeHtml(c.spec_id)}')" class="px-2 py-1 rounded bg-amber-950/60 hover:bg-amber-900/60 text-amber-300 border border-amber-500/30 text-[10px]">Expedite</button>` : ''}
+            ${colKey === 'review' ? `
+              <button onclick="event.stopPropagation(); openOverseerDetail('${escapeHtml(c.spec_id)}')" class="px-2 py-1 rounded bg-purple-950/60 hover:bg-purple-900/60 text-purple-300 border border-purple-500/30 text-[10px]">Review</button>
+              <button onclick="event.stopPropagation(); overseerAction('archive_spec', '${escapeHtml(c.spec_id)}')" class="px-2 py-1 rounded bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 border border-emerald-500/30 text-[10px] font-semibold">Approve</button>
+            ` : ''}
+          </div>
         </div>
       </div>
     `).join('');
@@ -3392,19 +3411,204 @@ function renderOverseerOverview(data) {
   if (window.lucide) lucide.createIcons();
 }
 
+let currentOverseerDetailSpecId = null;
+
+async function openOverseerDetail(specId) {
+  currentOverseerDetailSpecId = specId;
+  const drawer = document.getElementById('overseerDetailDrawer');
+  if (!drawer) return;
+
+  // Show drawer with loading skeleton
+  drawer.classList.remove('hidden');
+  document.getElementById('overseerDetailId').textContent = specId;
+  document.getElementById('overseerDetailTitle').textContent = 'Loading review dossier...';
+  document.getElementById('overseerDetailSummary').textContent = 'Fetching specification, landed commits & availability instructions...';
+  document.getElementById('overseerDetailUrls').innerHTML = '';
+  document.getElementById('overseerDetailInstructions').textContent = '';
+  document.getElementById('overseerDetailTasks').innerHTML = '<div class="text-slate-500 italic py-2">Loading subtasks...</div>';
+  document.getElementById('overseerDetailCommits').innerHTML = '<div class="text-slate-500 italic py-2">Loading git log...</div>';
+  document.getElementById('overseerDetailConcerns').innerHTML = '<div class="text-slate-500 italic py-2">Loading quality invariants...</div>';
+  document.getElementById('overseerDetailScreenshots').innerHTML = '';
+
+  try {
+    const res = await fetch(`/api/overseer/spec/${encodeURIComponent(specId)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    document.getElementById('overseerDetailId').textContent = data.spec_id || specId;
+    document.getElementById('overseerDetailTitle').textContent = data.title || (data.card ? data.card.title : specId);
+    
+    const colEl = document.getElementById('overseerDetailColumnBadge');
+    if (colEl) colEl.textContent = data.column || 'Review';
+
+    const engEl = document.getElementById('overseerDetailEngineBadge');
+    if (engEl) engEl.textContent = data.engine ? `@${data.engine}` : '@tigger';
+
+    // Summary
+    const sumEl = document.getElementById('overseerDetailSummary');
+    if (sumEl) sumEl.textContent = data.summary || 'No explicit summary found in specification header.';
+
+    // Availability & Live Links
+    const avail = data.availability || {};
+    const branchPill = document.getElementById('overseerDetailBranchPill');
+    if (branchPill) branchPill.textContent = avail.branch ? `${avail.branch} (${avail.commit || ''})` : (avail.commit || 'main');
+
+    const urlsEl = document.getElementById('overseerDetailUrls');
+    if (urlsEl) {
+      const urls = avail.urls || [];
+      if (!urls.length) {
+        urlsEl.innerHTML = `<span class="text-xs text-slate-400 font-mono">Workspace: ${escapeHtml(avail.workspace || '')}</span>`;
+      } else {
+        urlsEl.innerHTML = urls.map(u => `
+          <a href="${escapeHtml(u.url)}" target="_blank" rel="noopener noreferrer" class="px-3 py-1.5 rounded-lg bg-cyan-900/60 hover:bg-cyan-800/60 text-cyan-200 border border-cyan-500/30 text-xs font-semibold flex items-center space-x-1.5 transition">
+            <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
+            <span>${escapeHtml(u.label)}</span>
+          </a>
+        `).join('');
+      }
+    }
+
+    const instEl = document.getElementById('overseerDetailInstructions');
+    if (instEl) {
+      instEl.textContent = avail.test_instructions || `Workspace: ${avail.workspace || 'N/A'}`;
+    }
+
+    // What Was Done (Tasks & Subtasks)
+    const tasksEl = document.getElementById('overseerDetailTasks');
+    if (tasksEl) {
+      const tasks = data.what_was_done || [];
+      if (!tasks.length) {
+        tasksEl.innerHTML = `<div class="text-slate-500 italic py-2">All spec phases completed on disk & verified.</div>`;
+      } else {
+        tasksEl.innerHTML = tasks.map(t => {
+          const isDone = t.includes('[x]') || t.includes('[X]');
+          return `
+            <div class="flex items-start space-x-2 py-0.5">
+              <span class="${isDone ? 'text-emerald-400 font-bold' : 'text-slate-500'}">${isDone ? '✓' : '○'}</span>
+              <span class="${isDone ? 'text-slate-200' : 'text-slate-400'}">${escapeHtml(t.replace(/^-\s*\[.\]\s*/, ''))}</span>
+            </div>`;
+        }).join('');
+      }
+    }
+
+    // Landed Commits
+    const commitsEl = document.getElementById('overseerDetailCommits');
+    if (commitsEl) {
+      const commits = data.git_commits || [];
+      if (!commits.length) {
+        commitsEl.innerHTML = `<div class="text-slate-500 italic py-2">No recent commits parsed.</div>`;
+      } else {
+        commitsEl.innerHTML = commits.map(c => `
+          <div class="flex items-center space-x-2 py-0.5 truncate">
+            <span class="text-indigo-400 font-bold">●</span>
+            <span class="text-slate-300 truncate">${escapeHtml(c)}</span>
+          </div>`).join('');
+      }
+    }
+
+    // Concerns & Guardrails
+    const concernsEl = document.getElementById('overseerDetailConcerns');
+    if (concernsEl) {
+      const concerns = data.concerns || [];
+      if (!concerns.length) {
+        concernsEl.innerHTML = `<div class="text-slate-400 italic">No special failure domains or high-risk invariants flagged in spec.</div>`;
+      } else {
+        concernsEl.innerHTML = concerns.map(c => `
+          <div class="flex items-start space-x-2 text-xs text-amber-200/90 py-0.5">
+            <span class="text-amber-400 font-bold shrink-0">⚠️</span>
+            <span>${escapeHtml(c.replace(/^-\s*/, ''))}</span>
+          </div>`).join('');
+      }
+    }
+
+    // Screenshots
+    const ssSection = document.getElementById('overseerDetailScreenshotsSection');
+    const ssEl = document.getElementById('overseerDetailScreenshots');
+    if (ssSection && ssEl) {
+      const screenshots = data.screenshots || [];
+      if (!screenshots.length) {
+        ssSection.classList.add('hidden');
+      } else {
+        ssSection.classList.remove('hidden');
+        ssEl.innerHTML = screenshots.map(s => `
+          <div class="rounded-xl border border-slate-800 bg-dark-950 overflow-hidden group hover:border-brand-500/40 transition">
+            <a href="${escapeHtml(s.api_url)}" target="_blank" class="block">
+              <img src="${escapeHtml(s.api_url)}" alt="${escapeHtml(s.filename)}" class="w-full h-32 object-cover group-hover:scale-105 transition duration-200" />
+            </a>
+            <div class="p-2 text-[10px] font-mono text-slate-400 truncate">${escapeHtml(s.filename)}</div>
+          </div>`).join('');
+      }
+    }
+
+    // Parsed at
+    const parsedEl = document.getElementById('overseerDetailParsedAt');
+    if (parsedEl && data.parsed_at) {
+      parsedEl.textContent = `Dossier compiled at ${new Date(data.parsed_at).toLocaleTimeString()}`;
+    }
+
+    if (window.lucide) lucide.createIcons();
+  } catch (err) {
+    console.error('[Overseer] Detail fetch error:', err);
+    document.getElementById('overseerDetailTitle').textContent = `Error loading ${specId}`;
+    document.getElementById('overseerDetailSummary').textContent = `Failed to load spec dossier: ${err.message}`;
+  }
+}
+
+function closeOverseerDetail() {
+  const drawer = document.getElementById('overseerDetailDrawer');
+  if (drawer) drawer.classList.add('hidden');
+  currentOverseerDetailSpecId = null;
+}
+
+async function overseerApproveCurrentSpec() {
+  if (!currentOverseerDetailSpecId) return;
+  const btn = document.getElementById('overseerDetailApproveBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<i data-lucide="loader" class="w-4 h-4 animate-spin"></i><span>Approving...</span>`;
+    if (window.lucide) lucide.createIcons();
+  }
+
+  await overseerAction('archive_spec', currentOverseerDetailSpecId);
+  closeOverseerDetail();
+}
+
 async function overseerAction(action, specId) {
   try {
     const body = { action };
     if (specId) body.spec_id = specId;
-    await fetch('/api/overseer/action', {
+    const res = await fetch('/api/overseer/action', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.detail || 'Action failed');
+
+    // Visual toast notification
+    showOverseerToast(result.message || `Action ${action} succeeded`);
     await loadOverseer();
   } catch (err) {
     console.error('[Overseer] Action error:', err);
+    showOverseerToast(`Error: ${err.message}`, true);
   }
+}
+
+function showOverseerToast(msg, isError = false) {
+  let toast = document.getElementById('overseerToast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'overseerToast';
+    toast.className = 'fixed bottom-16 right-6 z-50 px-4 py-3 rounded-xl shadow-2xl text-xs font-bold transition-all duration-300 transform translate-y-4 opacity-0 pointer-events-none flex items-center space-x-2';
+    document.body.appendChild(toast);
+  }
+  toast.className = `fixed bottom-16 right-6 z-50 px-4 py-3 rounded-xl shadow-2xl text-xs font-bold transition-all duration-300 transform translate-y-0 opacity-100 flex items-center space-x-2 ${
+    isError ? 'bg-rose-900 border border-rose-500/40 text-rose-100' : 'bg-emerald-900 border border-emerald-500/40 text-emerald-100'
+  }`;
+  toast.innerHTML = `<span>${isError ? '⚠️' : '✅'}</span><span>${escapeHtml(msg)}</span>`;
+  setTimeout(() => {
+    toast.className = 'fixed bottom-16 right-6 z-50 px-4 py-3 rounded-xl shadow-2xl text-xs font-bold transition-all duration-300 transform translate-y-4 opacity-0 pointer-events-none flex items-center space-x-2';
+  }, 4000);
 }
 
 function overseerPauseRunner() {
@@ -3422,6 +3626,9 @@ window.loadOverseer = loadOverseer;
 window.overseerAction = overseerAction;
 window.overseerPauseRunner = overseerPauseRunner;
 window.overseerResumeRunner = overseerResumeRunner;
+window.openOverseerDetail = openOverseerDetail;
+window.closeOverseerDetail = closeOverseerDetail;
+window.overseerApproveCurrentSpec = overseerApproveCurrentSpec;
 window.visSetCameraPreset = visSetCameraPreset;
 window.visResetCamera = visResetCamera;
 window.visToggleAutoRotate = visToggleAutoRotate;

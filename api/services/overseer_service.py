@@ -49,12 +49,6 @@ class OverseerService:
         """Parse Kanban-Spec-Queue.md with graceful fallback."""
         path = self._get_kanban_path()
 
-        content = self._read_file_safe(path)
-        if not content:
-            return {"cards": [], "columns": {}, "counts": {}}
-
-        lines = content.split("\n")
-        cards = []
         columns: Dict[str, List[Dict[str, Any]]] = {
             "backlog": [],
             "queued": [],
@@ -64,7 +58,20 @@ class OverseerService:
             "review": [],
             "done": []
         }
-        
+
+        content = self._read_file_safe(path)
+        if content is None:
+            return {"cards": [], "columns": {}, "counts": {}}
+        if not content:
+            return {
+                "cards": [],
+                "columns": columns,
+                "counts": {c: 0 for c in columns},
+                "last_updated": datetime.now(timezone.utc).isoformat(),
+            }
+
+        lines = content.split("\n")
+        cards = []
         current_column = None
         column_pattern = re.compile(r"^##\s+(.+)$")
 
@@ -115,7 +122,10 @@ class OverseerService:
             return None
 
         checked, spec_id, title_rest, extra = match.groups()
-        spec_id = spec_id.strip().split()[0]
+        spec_id = spec_id.strip()
+        if not spec_id:
+            return None  # Empty spec_id is invalid
+        spec_id = spec_id.split()[0]
         
         # Parse title and workspace
         title = title_rest
@@ -216,7 +226,12 @@ class OverseerService:
             # Ensure required fields exist
             for field in ["stall_count", "last_status", "last_spec", "remediation_tried"]:
                 if field not in state:
-                    state[field] = None if field == "last_spec" else 0
+                    if field == "stall_count":
+                        state[field] = 0
+                    elif field == "remediation_tried":
+                        state[field] = ""
+                    else:
+                        state[field] = None
                     
             if "updated_at" not in state:
                 state["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -384,8 +399,7 @@ class OverseerService:
         return stalled
 
     def get_spec_details(self, spec_id: str) -> Dict[str, Any]:
-        """Get detailed information for a specific spec."""
-        # Find the spec in the Kanban queue
+        """Get detailed information for a specific spec, including review dossier."""
         kanban = self.parse_kanban_spec_queue()
         target_card = None
 
@@ -395,40 +409,204 @@ class OverseerService:
                 break
 
         if not target_card:
+            board_path = self._get_kanban_path()
+            if board_path.exists():
+                for line in board_path.read_text(encoding="utf-8", errors="replace").split("\n"):
+                    if spec_id.upper() in line.upper():
+                        target_card = {
+                            "spec_id": spec_id.upper(),
+                            "raw_line": line,
+                            "title": line.strip(),
+                            "column": "unknown"
+                        }
+                        break
+
+        if not target_card:
             raise HTTPException(status_code=404, detail=f"Spec {spec_id} not found")
 
-        # Find the spec file
-        local_spec_path = Path("/home/jagosan/repos/HermesKarma/specs")
-        spec_file = None
+        # Determine workspace
+        raw_ws = target_card.get("workspace", "") or ""
+        workspace = raw_ws.replace("`", "").replace('"', "").strip()
+        card_line = str(target_card.get("raw_line", ""))
+        if not workspace and ("HermesKarma" in card_line or "SPEC-HK" in spec_id):
+            workspace = "/home/jagosan/repos/HermesKarma"
+        elif not workspace and ("playground" in card_line or "PLAY" in spec_id):
+            workspace = "/home/jagosan/repos/playground"
+        elif not workspace and ("sunlit" in card_line or "SUN" in spec_id):
+            workspace = "/home/jagosan/repos/sunlit-hills"
+        elif not workspace and ("honeydew" in card_line or "HONEY" in spec_id):
+            workspace = "/home/jagosan/repos/honeydew"
+        elif not workspace and ("homelab" in card_line or "HL" in spec_id):
+            workspace = "/home/jagosan/obsidian/vault/homelab"
+
+        # Resolve spec file
+        spec_content = ""
         spec_path = None
+        candidate_paths = []
 
-        if local_spec_path.exists():
-            for f in local_spec_path.glob("*.md"):
-                if spec_id.lower() in f.stem.lower():
-                    spec_file = f.read_text(encoding="utf-8", errors="replace")
-                    spec_path = str(f)
+        if target_card.get("spec_path"):
+            sp = target_card["spec_path"].replace("`", "").replace('"', "").strip()
+            if workspace:
+                candidate_paths.append(Path(workspace) / sp)
+            candidate_paths.append(HERMES_DIR.parent / "obsidian/vault" / sp)
+            candidate_paths.append(HERMES_DIR.parent / "obsidian/vault/homelab" / sp)
+            candidate_paths.append(Path("/home/jagosan/repos/HermesKarma") / sp)
+
+        if workspace and Path(workspace).exists():
+            ws_specs = Path(workspace) / "specs"
+            if ws_specs.exists():
+                for sf in ws_specs.glob("*.md"):
+                    candidate_paths.append(sf)
+
+        vault_dir = HERMES_DIR.parent / "obsidian/vault"
+        if (vault_dir / "homelab/specs").exists():
+            for sf in (vault_dir / "homelab/specs").glob("*.md"):
+                candidate_paths.append(sf)
+
+        m_num = re.search(r"(\d+)", spec_id)
+        num_str = m_num.group(1) if m_num else ""
+
+        for cp in candidate_paths:
+            if not cp.exists() or not cp.is_file():
+                continue
+            c_stem = cp.stem.lower()
+            if spec_id.lower() in c_stem or (num_str and f"{int(num_str):02d}-" in c_stem):
+                try:
+                    spec_content = cp.read_text(encoding="utf-8", errors="replace")
+                    spec_path = str(cp)
                     break
+                except Exception:
+                    continue
 
-        # If not found locally, check vault
-        if not spec_file:
-            vault_spec_path = HERMES_DIR.parent / "obsidian/vault"
-            if vault_spec_path.exists():
-                for root, dirs, files in os.walk(vault_spec_path):
-                    for f in files:
-                        if f.endswith(".md") and spec_id.lower() in f.lower():
-                            try:
-                                with open(os.path.join(root, f), "r", encoding="utf-8", errors="replace") as fp:
-                                    spec_file = fp.read()
-                                    spec_path = os.path.join(root, f)
-                                    break
-                            except Exception:
-                                continue
+        # Extract Executive Summary / Objective
+        summary = ""
+        if spec_content:
+            m_sum = re.search(
+                r"## (?:1\.\s*)?(?:Executive Summary|Objective(?:\s*&\s*Scope)?)(.*?)(?=\n## |\Z)",
+                spec_content,
+                re.DOTALL | re.IGNORECASE,
+            )
+            if m_sum:
+                summary = m_sum.group(1).strip()
+            else:
+                paragraphs = [p.strip() for p in spec_content.split("\n\n") if p.strip() and not p.strip().startswith("#")]
+                if paragraphs:
+                    summary = "\n\n".join(paragraphs[:3])
+
+        # Extract Concerns / Invariants / Failure Domains
+        concerns = []
+        if spec_content:
+            m_concerns = re.search(
+                r"## (?:[0-9.]+\s*)?(?:Quality Invariants|Invariants|Security Guardrails|Pitfalls|Concerns|Failure Domains)(.*?)(?=\n## |\Z)",
+                spec_content,
+                re.DOTALL | re.IGNORECASE,
+            )
+            if m_concerns:
+                c_text = m_concerns.group(1).strip()
+                for line in c_text.split("\n"):
+                    l_str = line.strip()
+                    if l_str and (l_str[0].isdigit() or l_str.startswith(("-", "*"))):
+                        concerns.append(l_str)
+                if not concerns and c_text:
+                    concerns = [c_text[:400]]
+
+        # Extract "What Was Done" (Subtasks from project board)
+        what_was_done = []
+        board_ref = target_card.get("board", "") or ""
+        board_clean = board_ref.replace("[[", "").replace("]]", "").replace("Board:", "").strip()
+        if board_clean:
+            b_path = HERMES_DIR.parent / "obsidian/vault" / (board_clean if board_clean.startswith("boards/") else f"boards/{board_clean}")
+            if b_path.exists():
+                try:
+                    b_text = b_path.read_text(encoding="utf-8", errors="replace")
+                    for bl in b_text.split("\n"):
+                        bl_clean = bl.strip()
+                        if spec_id.upper() in bl_clean.upper() or (num_str and f"Spec {int(num_str)}" in bl_clean) or (num_str and f"Spec {num_str}" in bl_clean):
+                            if bl_clean.startswith("- ["):
+                                what_was_done.append(bl_clean)
+                except Exception:
+                    pass
+
+        # Query Git in workspace
+        git_commits = []
+        git_branch = ""
+        git_commit_hash = ""
+        if workspace and Path(workspace).exists():
+            try:
+                rc_b = subprocess.run(["git", "-C", workspace, "branch", "--show-current"], capture_output=True, text=True, timeout=5)
+                git_branch = rc_b.stdout.strip()
+                rc_h = subprocess.run(["git", "-C", workspace, "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=5)
+                git_commit_hash = rc_h.stdout.strip()
+                rc_log = subprocess.run(["git", "-C", workspace, "log", "-n", "6", "--oneline"], capture_output=True, text=True, timeout=5)
+                if rc_log.stdout.strip():
+                    git_commits = rc_log.stdout.strip().split("\n")
+            except Exception:
+                pass
+
+        # Where Available / How to Test
+        availability = {
+            "workspace": workspace,
+            "branch": git_branch,
+            "commit": git_commit_hash,
+            "urls": [],
+            "test_instructions": "",
+        }
+        if "HermesKarma" in (workspace or "") or "SPEC-HK" in spec_id:
+            availability["urls"].append({"label": "Live Hermes Karma (Tailscale)", "url": "https://karmes.jagosan.com"})
+            availability["urls"].append({"label": "Local Dev Server", "url": "http://localhost:8020"})
+            availability["test_instructions"] = "Open https://karmes.jagosan.com and navigate to the Overseer tab. Test suite: pytest tests/test_overseer.py"
+        elif "playground" in (workspace or "") or "PLAY" in spec_id:
+            availability["urls"].append({"label": "Lunar Frontier Web Client", "url": "http://localhost:5173"})
+            availability["urls"].append({"label": "Tailscale Frontier", "url": "https://playground.jagosan.com"})
+            availability["test_instructions"] = "cd /home/jagosan/repos/playground && npm run dev. NullEngine tests: npm test"
+        elif "sunlit" in (workspace or "") or "SUN" in spec_id:
+            availability["urls"].append({"label": "Home Assistant Dashboard", "url": "http://localhost:8123"})
+            availability["test_instructions"] = "Inspect Frigate camera streams and MQTT events via mosquitto_sub -t 'sunlit/#'"
+        elif "honeydew" in (workspace or "") or "HONEY" in spec_id:
+            availability["urls"].append({"label": "Honeydew Web App", "url": "http://localhost:3000"})
+            availability["test_instructions"] = "cd /home/jagosan/repos/honeydew && npm run dev"
+
+        # Discover Screenshots & Visual Assets
+        screenshots = []
+        if workspace and Path(workspace).exists():
+            ws_path = Path(workspace)
+            for ad in [ws_path / "docs/assets", ws_path / "assets", ws_path / "screenshots", ws_path / "docs"]:
+                if ad.exists():
+                    for img in ad.glob("*"):
+                        if img.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif"):
+                            screenshots.append({
+                                "filename": img.name,
+                                "path": str(img),
+                                "api_url": f"/api/overseer/image?path={img}"
+                            })
+
+        if spec_content:
+            img_refs = re.findall(r"!\[(.*?)\]\((.*?)\)", spec_content)
+            for alt, ref in img_refs:
+                if not ref.startswith("http"):
+                    resolved_ref = (Path(spec_path).parent / ref if spec_path else Path(workspace or ".") / ref).resolve()
+                    if resolved_ref.exists() and str(resolved_ref) not in [s["path"] for s in screenshots]:
+                        screenshots.append({
+                            "filename": resolved_ref.name,
+                            "alt": alt,
+                            "path": str(resolved_ref),
+                            "api_url": f"/api/overseer/image?path={resolved_ref}"
+                        })
 
         return {
-            "spec_id": spec_id,
+            "spec_id": spec_id.upper(),
             "card": target_card,
-            "spec_content": spec_file,
+            "title": target_card.get("title", ""),
+            "column": target_card.get("column", ""),
+            "priority": target_card.get("priority"),
+            "engine": target_card.get("engine", "tigger"),
             "spec_path": spec_path,
+            "summary": summary,
+            "what_was_done": what_was_done,
+            "git_commits": git_commits,
+            "availability": availability,
+            "concerns": concerns,
+            "screenshots": screenshots[:6],
             "parsed_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -561,49 +739,124 @@ class OverseerService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to resume runner: {str(e)}")
 
+    def _move_card_in_board(
+        self,
+        board_path: Path,
+        spec_id: str,
+        dest_column_name: str,
+        mark_checked: bool = False,
+        set_p0: bool = False,
+    ) -> bool:
+        """Atomically move a spec card to a destination column across markdown section headers."""
+        if not board_path.exists():
+            return False
+
+        content = board_path.read_text(encoding="utf-8", errors="replace")
+        lines = content.split("\n")
+
+        columns = [
+            "📥 Backlog",
+            "⏳ Queued",
+            "🚨 Expedited",
+            "🚧 Running",
+            "⏸️ Paused",
+            "🧪 Review & Ready to Test",
+            "✅ Done & Archived",
+        ]
+
+        sections = {col: [] for col in columns}
+        preamble = []
+        current_col = None
+        extracted_card = None
+
+        for line in lines:
+            stripped = line.strip()
+            matched_col = None
+            if stripped.startswith("## "):
+                header_text = stripped[3:].strip()
+                for col in columns:
+                    if header_text in col or col in header_text:
+                        matched_col = col
+                        break
+
+            if matched_col:
+                current_col = matched_col
+            elif current_col:
+                # Check if this line is our target card
+                if spec_id.upper() in stripped.upper() and (
+                    f"**[{spec_id.upper()}]**" in stripped.upper() or f"**{spec_id.upper()}**" in stripped.upper()
+                ):
+                    extracted_card = line
+                else:
+                    sections[current_col].append(line)
+            else:
+                preamble.append(line)
+
+        if not extracted_card:
+            # Fallback looser search across lines
+            for col, col_lines in sections.items():
+                for idx, cl in enumerate(col_lines):
+                    if spec_id.upper() in cl.upper():
+                        extracted_card = col_lines.pop(idx)
+                        break
+                if extracted_card:
+                    break
+
+        if not extracted_card:
+            return False
+
+        card_line = extracted_card
+        if mark_checked:
+            card_line = re.sub(r"^(\s*-\s*)\[.\]", r"\1[x]", card_line)
+            if "(Archived)" not in card_line:
+                card_line = f"{card_line.rstrip()} (Archived)"
+        else:
+            card_line = re.sub(r"^(\s*-\s*)\[.\]", r"\1[ ]", card_line)
+
+        if set_p0:
+            if "#p0" not in card_line:
+                if re.search(r"#p[12]\b", card_line):
+                    card_line = re.sub(r"#p[12]\b", "#p0", card_line, count=1)
+                else:
+                    card_line = f"{card_line.rstrip()} #p0"
+
+        # Resolve destination column
+        target_col = None
+        for col in columns:
+            if dest_column_name.lower() in col.lower() or col.lower() in dest_column_name.lower():
+                target_col = col
+                break
+        if not target_col:
+            target_col = dest_column_name
+
+        sections[target_col].append(card_line)
+
+        out = []
+        if preamble:
+            out.extend(preamble)
+
+        for col in columns:
+            out.append(f"## {col}")
+            for l in sections[col]:
+                if l.strip():
+                    out.append(l)
+            out.append("")
+
+        new_content = "\n".join(out).rstrip() + "\n"
+        return self._write_file_atomic(board_path, new_content)
+
     def expedite_spec(self, spec_id: str) -> Dict[str, Any]:
         """Move spec card to Expedited column with #p0 priority."""
         try:
-            kanban = self.parse_kanban_spec_queue()
-
-            target_card = None
-            for card in kanban.get("cards", []):
-                if card.get("spec_id", "").upper() == spec_id.upper():
-                    target_card = card
-                    break
-
-            if not target_card:
-                raise HTTPException(status_code=404, detail=f"Spec {spec_id} not found")
-
             board_path = self._get_kanban_path()
             if not board_path.exists():
                 raise HTTPException(status_code=500, detail="Kanban-Spec-Queue.md not found")
 
-            content = board_path.read_text(encoding="utf-8", errors="replace")
-            lines = content.split("\n")
-
-            updated_lines = []
-            card_found = False
-
-            for line in lines:
-                if f"**[{spec_id.upper()}]**" in line.upper() or spec_id.upper() in line.upper():
-                    if "#p0" not in line:
-                        if re.search(r"#p[12]\b", line):
-                            line = re.sub(r"#p[12]\b", "#p0", line, count=1)
-                        else:
-                            line = f"{line.rstrip()} #p0"
-                    card_found = True
-                updated_lines.append(line)
-
-            if not card_found:
-                raise HTTPException(status_code=404, detail="Could not find spec card in Kanban board")
-
-            new_content = "\n".join(updated_lines)
-            if not self._write_file_atomic(board_path, new_content):
-                raise HTTPException(status_code=500, detail="Failed to write updated Kanban board")
+            if not self._move_card_in_board(board_path, spec_id, "🚨 Expedited", mark_checked=False, set_p0=True):
+                raise HTTPException(status_code=404, detail=f"Spec {spec_id} not found in spec queue board")
 
             if not self._commit_vault_changes(f"chore(spec-queue): expedite {spec_id} (#p0)"):
-                pass  # Non-fatal: log but continue
+                pass
 
             return {
                 "success": True,
@@ -617,44 +870,32 @@ class OverseerService:
             raise HTTPException(status_code=500, detail=f"Failed to expedite spec: {str(e)}")
 
     def archive_spec(self, spec_id: str) -> Dict[str, Any]:
-        """Move spec card from Review to Archived."""
+        """Move spec card from Review to Done & Archived."""
         try:
-            kanban = self.parse_kanban_spec_queue()
-
-            target_card = None
-            for card in kanban.get("cards", []):
-                if card.get("spec_id", "").upper() == spec_id.upper():
-                    target_card = card
-                    break
-
-            if not target_card:
-                raise HTTPException(status_code=404, detail=f"Spec {spec_id} not found")
-
             board_path = self._get_kanban_path()
             if not board_path.exists():
                 raise HTTPException(status_code=500, detail="Kanban-Spec-Queue.md not found")
 
-            content = board_path.read_text(encoding="utf-8", errors="replace")
-            lines = content.split("\n")
+            if not self._move_card_in_board(board_path, spec_id, "✅ Done & Archived", mark_checked=True):
+                raise HTTPException(status_code=404, detail=f"Spec {spec_id} not found in spec queue board")
 
-            updated_lines = []
-
-            for line in lines:
-                if spec_id.upper() in line.upper():
-                    # Archive the card without corrupting **[SPEC-ID]**
-                    line_archived = re.sub(r"^(\s*-\s*)\[.\]", r"\1[x]", line)
-                    if "(Archived)" not in line_archived:
-                        line_archived = f"{line_archived.rstrip()} (Archived)"
-                    updated_lines.append(line_archived)
-                    continue
-                updated_lines.append(line)
-
-            new_content = "\n".join(updated_lines)
-            if not self._write_file_atomic(board_path, new_content):
-                raise HTTPException(status_code=500, detail="Failed to write updated Kanban board")
+            # Also attempt to mark done on referenced project board if available
+            kanban = self.parse_kanban_spec_queue()
+            for card in kanban.get("cards", []):
+                if card.get("spec_id", "").upper() == spec_id.upper() and card.get("board"):
+                    b_ref = card["board"].replace("[[", "").replace("]]", "").replace("Board:", "").strip()
+                    b_file = HERMES_DIR.parent / "obsidian/vault" / (b_ref if b_ref.startswith("boards/") else f"boards/{b_ref}")
+                    if b_file.exists():
+                        try:
+                            b_text = b_file.read_text(encoding="utf-8", errors="replace")
+                            b_updated = re.sub(rf"^(\s*-\s*)\[.\](\s*\*\*\[?{re.escape(spec_id)}\b)", r"\1[x]\2", b_text, flags=re.MULTILINE | re.IGNORECASE)
+                            self._write_file_atomic(b_file, b_updated)
+                            subprocess.run(["git", "-C", str(self._get_vault_git_dir()), "add", str(b_file)], capture_output=True, timeout=10)
+                        except Exception:
+                            pass
 
             if not self._commit_vault_changes(f"chore(spec-queue): archive {spec_id}"):
-                pass  # Non-fatal: log but continue
+                pass
 
             return {
                 "success": True,

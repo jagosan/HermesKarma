@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from api.services.overseer_service import overseer_service
 
@@ -43,6 +43,33 @@ async def get_spec_details(spec_id: str):
 async def get_logs(lines: int = Query(100, ge=1, le=1000)):
     """Get recent execution logs from cr_runner.log and cr_governor.log."""
     return overseer_service.get_logs(lines)
+
+
+@router.get("/image")
+async def get_overseer_image(path: str = Query(...)):
+    """Safely stream image artifacts from homelab repositories or vault."""
+    clean_path = Path(path).resolve()
+    allowed_roots = [
+        Path("/home/jagosan/repos").resolve(),
+        Path("/home/jagosan/obsidian/vault").resolve(),
+        Path("/home/jagosan/.hermes").resolve(),
+    ]
+    if not any(str(clean_path).startswith(str(root)) for root in allowed_roots):
+        raise HTTPException(status_code=403, detail="Path outside allowed homelab workspace roots")
+
+    if not clean_path.exists() or not clean_path.is_file():
+        raise HTTPException(status_code=404, detail="Image file not found")
+
+    suffix = clean_path.suffix.lower()
+    media_map = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+        ".gif": "image/gif",
+    }
+    return FileResponse(clean_path, media_type=media_map.get(suffix, "application/octet-stream"))
 
 
 @router.get("/stream")
